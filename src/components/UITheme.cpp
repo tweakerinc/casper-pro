@@ -1,0 +1,226 @@
+#include "UITheme.h"
+
+#include <FsHelpers.h>
+#include <GfxRenderer.h>
+#include <HalGPIO.h>
+#include <Logging.h>
+
+#include <algorithm>
+#include <memory>
+
+#include "MappedInputManager.h"
+#include "RecentBooksStore.h"
+#include "components/themes/BaseTheme.h"
+#include "components/themes/bare/BareTheme.h"
+#include "components/themes/penumbra/PenumbraTheme.h"
+// Product themes: Bare + Penumbra only (other home themes deleted from tree).
+
+UITheme UITheme::instance;
+
+UITheme::UITheme() {
+  auto themeType = static_cast<CasperSettings::UI_THEME>(SETTINGS.uiTheme);
+  setTheme(themeType);
+}
+
+void UITheme::reload() {
+  auto themeType = static_cast<CasperSettings::UI_THEME>(SETTINGS.uiTheme);
+  setTheme(themeType);
+}
+
+void UITheme::setTheme(CasperSettings::UI_THEME type) {
+  switch (type) {
+    case CasperSettings::UI_THEME::BARE:
+      LOG_DBG("UI", "Using Bare theme");
+      currentTheme = std::make_unique<BareTheme>();
+      currentMetrics = &BareMetrics::values;
+      break;
+    case CasperSettings::UI_THEME::PENUMBRA:
+      // RTC devices (X3, X4 Pro): large clock + under-panel. Classic X4: title/author + Recents.
+      LOG_DBG("UI", "Using Penumbra theme (%s)",
+              PenumbraThemeUi::usesClockFace() ? "clock face" : "progress face");
+      currentTheme = std::make_unique<PenumbraTheme>();
+      currentMetrics = &PenumbraMetrics::values;
+      break;
+    // Legacy JSON theme ids → Bare (picker only offers Bare + Penumbra).
+    case CasperSettings::UI_THEME::GHOST:
+    case CasperSettings::UI_THEME::STATS:
+    case CasperSettings::UI_THEME::STATS_LIFE:
+    case CasperSettings::UI_THEME::DASHBOARD_RECENTS:
+    case CasperSettings::UI_THEME::DASHBOARD_SCROLL:
+    case CasperSettings::UI_THEME::DASHBOARD_MAGAZINE:
+    case CasperSettings::UI_THEME::DASHBOARD_CARD:
+    case CasperSettings::UI_THEME::MINIMAL:
+    case CasperSettings::UI_THEME::LYRA_CAROUSEL:
+    case CasperSettings::UI_THEME::CLASSIC:
+    case CasperSettings::UI_THEME::LYRA:
+    case CasperSettings::UI_THEME::LYRA_3_COVERS:
+    case CasperSettings::UI_THEME::ROUNDEDRAFF:
+    default:
+      LOG_DBG("UI", "Using Bare theme (legacy id remapped)");
+      currentTheme = std::make_unique<BareTheme>();
+      currentMetrics = &BareMetrics::values;
+      break;
+  }
+  metricsValid = false;
+}
+
+const ThemeMetrics& UITheme::getMetrics() const {
+  // hasTouch() can flip once touch init completes after static construction, so the
+  // cached copy is refreshed when the flag differs instead of copying the struct per call.
+  // Soft front chrome (X4 Pro): keep footer height so Menu/Library/Recents/Read draw.
+  // Button-only touch boards (Sticky with physical keys) still hide the strip.
+  const bool touchChrome = gpio.hasTouch() && !gpio.needsOnScreenFrontChrome();
+  if (!metricsValid || touchChrome != metricsForTouch) {
+    adjustedMetrics = *currentMetrics;
+    if (touchChrome) {
+      adjustedMetrics.buttonHintsHeight = 0;
+    }
+    metricsForTouch = touchChrome;
+    metricsValid = true;
+  }
+  return adjustedMetrics;
+}
+
+int UITheme::getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader, bool hasTabBar, bool hasButtonHints,
+                                     bool hasSubtitle, int extraReservedHeight) {
+  const ThemeMetrics metrics = UITheme::getInstance().getMetrics();
+  auto orientation = renderer.getOrientation();
+  int reservedHeight = metrics.topPadding;
+  if (hasHeader) {
+    reservedHeight += metrics.headerHeight + metrics.verticalSpacing;
+  }
+  if (hasTabBar) {
+    reservedHeight += metrics.tabBarHeight;
+  }
+  if (hasButtonHints && orientation != GfxRenderer::Orientation::LandscapeClockwise &&
+      orientation != GfxRenderer::Orientation::LandscapeCounterClockwise) {
+    reservedHeight += metrics.verticalSpacing + metrics.buttonHintsHeight;
+  }
+  const int availableHeight = renderer.getScreenHeight() - reservedHeight - extraReservedHeight;
+  return UITheme::getInstance().getTheme().getListPageItems(availableHeight, hasSubtitle);
+}
+
+// Screen area excluding the button hints
+Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButtonHints, bool hasSideButtonHints) {
+  auto orientation = renderer.getOrientation();
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+  Rect safeArea = Rect{0, 0, screenWidth, screenHeight};
+  // Portrait: full footer height. Landscape: thinner side strip (rotated labels).
+  const int frontReserve = hasFrontButtonHints ? BaseTheme::frontButtonHintReserve(renderer) : 0;
+  (void)hasSideButtonHints;
+  switch (orientation) {
+    case GfxRenderer::Orientation::Portrait:
+      if (hasFrontButtonHints) {
+        safeArea.height -= frontReserve;
+      }
+      break;
+    case GfxRenderer::Orientation::LandscapeClockwise:
+      if (hasFrontButtonHints) {
+        safeArea.x += frontReserve;
+        safeArea.width -= frontReserve;
+      }
+      break;
+    case GfxRenderer::Orientation::PortraitInverted:
+      if (hasFrontButtonHints) {
+        safeArea.y += frontReserve;
+        safeArea.height -= frontReserve;
+      }
+      break;
+    case GfxRenderer::Orientation::LandscapeCounterClockwise:
+      if (hasFrontButtonHints) {
+        safeArea.width -= frontReserve;
+      }
+      break;
+  }
+  return safeArea;
+}
+
+std::string UITheme::getCoverThumbPath(std::string coverBmpPath, int coverHeight) {
+  size_t pos = coverBmpPath.find("[HEIGHT]", 0);
+  if (pos != std::string::npos) {
+    coverBmpPath.replace(pos, 8, std::to_string(coverHeight));
+  }
+  return coverBmpPath;
+}
+
+UIIcon UITheme::getFileIcon(const std::string& filename) {
+  if (filename.back() == '/') {
+    return Folder;
+  }
+  if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename)) {
+    return Book;
+  }
+  if (FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename)) {
+    return Text;
+  }
+  if (FsHelpers::hasBmpExtension(filename)) {
+    return Image;
+  }
+  return File;
+}
+
+int UITheme::getStatusBarHeight() {
+  const ThemeMetrics metrics = UITheme::getInstance().getMetrics();
+  const auto sb = SETTINGS.statusBarSpec();
+
+  // Layout reservation is hardware-agnostic: pass clockAvailable=true so the
+  // reserved height does not depend on whether an RTC is present.
+  // Bottom text lane scales with Manage Reader UI → Font Size.
+  const int textLane = sb.textLaneVisible(true) ? SETTINGS.getStatusBarTextLaneHeight() : 0;
+  return textLane + (sb.showsProgressBar() ? (sb.progressBarHeightPx + metrics.progressBarMarginTop) : 0);
+}
+
+int UITheme::getProgressBarHeight() {
+  const ThemeMetrics metrics = UITheme::getInstance().getMetrics();
+  const auto sb = SETTINGS.statusBarSpec();
+  return sb.showsProgressBar() ? (sb.progressBarHeightPx + metrics.progressBarMarginTop) : 0;
+}
+
+// Centered text implementation that takes the safe area into account
+void UITheme::drawCenteredText(const GfxRenderer& renderer, Rect screen, int fontId, int y, const char* text,
+                               bool black, EpdFontFamily::Style style) {
+  const int x = screen.x + (screen.width - renderer.getTextWidth(fontId, text, style)) / 2;
+  renderer.drawText(fontId, x, y, text, black, style);
+}
+
+void UITheme::drawCenteredWrappedText(const GfxRenderer& renderer, Rect bounds, int fontId, const char* text,
+                                      int maxLines, bool black, EpdFontFamily::Style style,
+                                      TextVerticalAlignment verticalAlignment) {
+  if (!text || *text == '\0' || bounds.width <= 0 || bounds.height <= 0 || maxLines <= 0) return;
+
+  const int lineHeight = renderer.getLineHeight(fontId);
+  if (lineHeight <= 0) return;
+  // Extra air between wrapped lines (menus / dialogs); matches list wrap leading.
+  constexpr int kWrapLineExtra = 4;
+  const int lineStep = lineHeight + kWrapLineExtra;
+
+  const int lineLimit = std::min(maxLines, bounds.height / lineStep);
+  if (lineLimit <= 0) return;
+
+  const auto alignedTop = [&](const int textHeight) {
+    switch (verticalAlignment) {
+      case TextVerticalAlignment::CENTER:
+        return bounds.y + (bounds.height - textHeight) / 2;
+      case TextVerticalAlignment::BOTTOM:
+        return bounds.y + bounds.height - textHeight;
+      case TextVerticalAlignment::TOP:
+      default:
+        return bounds.y;
+    }
+  };
+
+  if (renderer.getTextWidth(fontId, text, style) <= bounds.width) {
+    drawCenteredText(renderer, bounds, fontId, alignedTop(lineHeight), text, black, style);
+    return;
+  }
+
+  const auto lines = renderer.wrappedText(fontId, text, bounds.width, lineLimit, style);
+  const int n = static_cast<int>(lines.size());
+  const int blockH = n <= 1 ? lineHeight : ((n - 1) * lineStep + lineHeight);
+  int y = alignedTop(blockH);
+  for (const auto& line : lines) {
+    drawCenteredText(renderer, bounds, fontId, y, line.c_str(), black, style);
+    y += lineStep;
+  }
+}

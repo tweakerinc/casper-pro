@@ -1,0 +1,23 @@
+[434] [ERR] [GYR] SDK IMU not found
+[434] [INF] [CLK] SDK RTC found[435] [INF] [MAIN] Hardware detect: X4/Pro touch=1 frontlight=1
+[677] [SD] SDMMC card mounted
+[677] [INF] [SD] Installed RTC-backed SD timestamp callback
+[678] [INF] [SD] Installed RTC-backed SD timestamp callback
+[686] [DBG] [UI] Using Penumbra theme (X4 progress)
+[687] [DBG] [MAIN] Starting Casper version v0.1.9-pro
+[718]   Wait complete:  CMD_SOFT_RESET (0 ms)
+[719]   Wait complete:  CMD_AUTO_WRITE_BW_RAM (0 ms)
+[719]   Wait complete:  CMD_AUTO_WRITE_RED_RAM (0 ms)
+[719] [DBG] [MAIN] Display initialized
+[720] [DBG] [SDREG] Fonts directory not found: /.fonts
+[720] [DBG] [SDREG] Fonts directory not found: /fonts
+[720] [DBG] [SDREG] Discovery complete: 0 families
+[720] [DBG] [SDFS] SD font system ready (0 families discovered)
+[720] [DBG] [MAIN] Fonts setup
+[720] [DBG] [ACT] Entering activity: Boot
+[735] [DBG] [GFX] Time = 14 ms from clearScreen to displayBuffer
+[842] [DBG] [ACT] Exiting activity: Boot
+[842] [DBG] [ACT] Entering activity: Home
+[842] [DBG] [HOME] Hero thumbs ready ΓÇö multipass on first paint (skip shell HALF)
+[876] [DBG] [GFX] Time = 34 ms from clearScreen to displayBuffer
+[3846] [DBG] [PWR] Going to low-power mode

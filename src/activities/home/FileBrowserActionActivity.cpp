@@ -1,0 +1,444 @@
+#include "FileBrowserActionActivity.h"
+#include "util/UiGhostPolicy.h"
+
+#include <GfxRenderer.h>
+#include <HalGPIO.h>
+#include <HalStorage.h>
+#include <I18n.h>
+#include <Logging.h>
+
+#include <algorithm>
+
+#include <Epub.h>
+#include <FsHelpers.h>
+#include <Xtc.h>
+
+#include "BookActions.h"
+#include "BookDescriptionActivity.h"
+#include "RecentBooksStore.h"
+#include "activities/reader/BookReadingStats.h"
+#include "activities/reader/BookStatsActivity.h"
+#include "activities/reader/GlobalReadingStats.h"
+#include "activities/util/ConfirmationActivity.h"
+#include "components/UITheme.h"
+#include "fontIds.h"
+#include "util/CasperPaths.h"
+
+namespace {
+// Match Bare footer / larger chrome: UI_12 reads better than UI_10 on the action list.
+constexpr int kTitleFontId = UI_12_FONT_ID;
+constexpr int kMenuFontId = UI_12_FONT_ID;
+constexpr int kTitleMaxLines = 2;
+constexpr int kCompactTitleY = 14;
+constexpr int kTitleLineGap = 1;
+constexpr int kBatteryTextReserveWidth = 90;
+constexpr int kMenuRowPadY = 10;
+
+// True while any button that can open this menu or navigate it is still held.
+// Dashboard long-press uses physical Read (BTN_RIGHT); recents uses Confirm.
+// NavNext includes Right, so a held Read would continuous-scroll the list.
+bool anyOpenOrNavButtonHeld(const MappedInputManager& input) {
+  using B = MappedInputManager::Button;
+  if (input.isPressed(B::Confirm) || input.isPressed(B::Back) || input.isPressed(B::Left) ||
+      input.isPressed(B::Right) || input.isPressed(B::Up) || input.isPressed(B::Down)) {
+    return true;
+  }
+  // Raw front slots (dashboard Read is hardware Right, independent of remaps).
+  return input.isFrontButtonPressed(HalGPIO::BTN_BACK) || input.isFrontButtonPressed(HalGPIO::BTN_CONFIRM) ||
+         input.isFrontButtonPressed(HalGPIO::BTN_LEFT) || input.isFrontButtonPressed(HalGPIO::BTN_RIGHT);
+}
+}  // namespace
+
+FileBrowserActionActivity::FileBrowserActionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                                     std::string title, std::string bookPath,
+                                                     const bool includeRemoveFromRecents,
+                                                     const bool openedFromLongPress)
+    : Activity("FileBrowserAction", renderer, mappedInput),
+      title(std::move(title)),
+      bookPath(std::move(bookPath)),
+      includeRemoveFromRecents(includeRemoveFromRecents),
+      bookMode(true),
+      awaitOpenButtonRelease(openedFromLongPress) {
+  rebuildItems();
+}
+
+FileBrowserActionActivity::FileBrowserActionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                                     std::string title, std::vector<MenuItem> items,
+                                                     const bool openedFromLongPress)
+    : Activity("FileBrowserAction", renderer, mappedInput),
+      title(std::move(title)),
+      bookMode(false),
+      items(std::move(items)),
+      awaitOpenButtonRelease(openedFromLongPress) {}
+
+void FileBrowserActionActivity::rebuildItems() {
+  if (!bookMode) return;
+  items = BookActions::buildBookActionItems(bookPath, includeRemoveFromRecents);
+  if (selectedIndex >= static_cast<int>(items.size())) {
+    selectedIndex = std::max(0, static_cast<int>(items.size()) - 1);
+  }
+}
+
+void FileBrowserActionActivity::stayInMenu() {
+  // After a nested confirmation / toast, swallow residual presses so we do not
+  // immediately re-activate an item or cancel via a stale Back/Confirm edge.
+  awaitOpenButtonRelease = true;
+  rebuildItems();
+  requestUpdate();
+}
+
+void FileBrowserActionActivity::cancelAndClose() {
+  (void)mappedInput.wasReleased(MappedInputManager::Button::Back);
+  (void)mappedInput.getReleasedFrontButton();
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
+}
+
+bool FileBrowserActionActivity::handleHomeGesture() {
+  // Home pad = Back: return to Library/Recents/Home under this sheet.
+  cancelAndClose();
+  return true;
+}
+
+void FileBrowserActionActivity::menuListMetrics(int& outContentTop, int& outContentHeight, int& outRowH,
+                                                int& outPageItems) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const int titleX = metrics.contentSidePadding;
+  const int titleMaxWidth = std::max(0, pageWidth - titleX - metrics.contentSidePadding - kBatteryTextReserveWidth);
+  const auto titleLines =
+      renderer.wrappedText(kTitleFontId, title.c_str(), titleMaxWidth, kTitleMaxLines, EpdFontFamily::BOLD);
+  const int titleLineHeight = renderer.getLineHeight(kTitleFontId);
+  const int titleBlockHeight = static_cast<int>(titleLines.size()) * titleLineHeight +
+                               std::max(0, static_cast<int>(titleLines.size()) - 1) * kTitleLineGap;
+  const bool tallHeader = metrics.headerHeight > 60;
+  const int titleY = metrics.topPadding + (tallHeader ? metrics.batteryBarHeight + 3 : kCompactTitleY);
+  const int titleBottomPadding = tallHeader ? 8 : 4;
+  const int actionHeaderHeight =
+      std::max(metrics.headerHeight, titleY - metrics.topPadding + titleBlockHeight + titleBottomPadding);
+  outContentTop = metrics.topPadding + actionHeaderHeight + metrics.verticalSpacing;
+  outContentHeight = pageHeight - outContentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  const int lineH = renderer.getLineHeight(kMenuFontId);
+  outRowH = lineH + kMenuRowPadY * 2;
+  outPageItems = std::max(1, outContentHeight / outRowH);
+}
+
+void FileBrowserActionActivity::onEnter() {
+  Activity::onEnter();
+  selectedIndex = 0;
+  // FAST open — do not inherit a pending home HALF scrub.
+  UiGhostPolicy::clearHardScrub();
+  // Long-press open: the finger is still down on the title (often above the
+  // menu list). Suppress that contact so the eventual lift cannot be read as
+  // "tap empty → close" or "tap row → activate".
+  if (awaitOpenButtonRelease) {
+    mappedInput.suppressTouchContact();
+  }
+  requestUpdate();
+}
+
+void FileBrowserActionActivity::activateSelected() {
+  if (items.empty() || selectedIndex < 0 || selectedIndex >= static_cast<int>(items.size())) {
+    ActivityResult result;
+    result.isCancelled = true;
+    setResult(std::move(result));
+    finish();
+    return;
+  }
+
+  const FileBrowserAction action = items[static_cast<size_t>(selectedIndex)].action;
+
+  // Custom menus (clippings, etc.): return the choice; parent does the work.
+  if (!bookMode) {
+    setResult(FileBrowserActionResult{static_cast<int>(action)});
+    finish();
+    return;
+  }
+
+  switch (action) {
+    case FileBrowserAction::Open:
+      setResult(FileBrowserActionResult{static_cast<int>(action)});
+      finish();
+      return;
+
+    case FileBrowserAction::Description: {
+      // Never block Confirm. Push immediately; synopsis paints Loading then loads.
+      LOG_DBG("MENU", "Synopsis selected (warmed=%u bytes)", static_cast<unsigned>(warmedSynopsis.size()));
+      if (!warmedSynopsis.empty()) {
+        startActivityForResult(
+            std::make_unique<BookDescriptionActivity>(renderer, mappedInput, title, std::move(warmedSynopsis)),
+            [this](const ActivityResult&) { stayInMenu(); });
+      } else {
+        startActivityForResult(
+            std::make_unique<BookDescriptionActivity>(renderer, mappedInput, title, std::string{}, bookPath),
+            [this](const ActivityResult&) { stayInMenu(); });
+      }
+      return;
+    }
+
+    case FileBrowserAction::ReadingStats: {
+      std::string cachePath = BookReadingStats::cachePathForBook(bookPath);
+      if (cachePath.empty() && FsHelpers::hasEpubExtension(bookPath)) {
+        cachePath = Epub(bookPath, CasperPaths::kPackageCacheRoot).getCachePath();
+      } else if (cachePath.empty() && FsHelpers::hasXtcExtension(bookPath)) {
+        Xtc xtc(bookPath, CasperPaths::kPackageCacheRoot);
+        if (xtc.load()) cachePath = xtc.getCachePath();
+      }
+      BookReadingStats stats = BookReadingStats::loadForBook(bookPath);
+      const float progress = stats.getProgressPercent();
+      const GlobalReadingStats global = GlobalReadingStats::load();
+      const GlobalReadingStats aggregated = GlobalReadingStats::loadAggregated(global);
+      startActivityForResult(
+          std::make_unique<BookStatsActivity>(renderer, mappedInput, title, cachePath, stats, progress, false, 0u,
+                                              global, aggregated, /*returnToHomeOnExit=*/false),
+          [this](const ActivityResult&) { stayInMenu(); });
+      return;
+    }
+
+    case FileBrowserAction::ResetPace:
+      if (BookActions::resetReadingPace(bookPath)) {
+        BookActions::drawToast(renderer, tr(STR_RESET_READING_PACE));
+        delay(800);
+      }
+      selectedIndex = 0;
+      stayInMenu();
+      return;
+
+    case FileBrowserAction::ToggleCompleted: {
+      bool completed = false;
+      if (BookActions::toggleBookCompleted(bookPath, title, completed)) {
+        BookActions::drawToast(renderer, completed ? tr(STR_MARK_FINISHED) : tr(STR_MARK_UNFINISHED));
+        delay(800);
+      }
+      selectedIndex = 0;
+      stayInMenu();
+      return;
+    }
+
+    case FileBrowserAction::RemoveFromRecents:
+      startActivityForResult(
+          std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_REMOVE_FROM_RECENTS), title),
+          [this](const ActivityResult& confirmation) {
+            if (confirmation.isCancelled) {
+              stayInMenu();
+              return;
+            }
+            RECENT_BOOKS.removeByPath(bookPath);
+            setResult(FileBrowserActionResult{static_cast<int>(FileBrowserAction::RemoveFromRecents)});
+            finish();
+          });
+      return;
+
+    case FileBrowserAction::Delete:
+      startActivityForResult(
+          std::make_unique<ConfirmationActivity>(renderer, mappedInput, std::string(tr(STR_DELETE)) + "? ", title),
+          [this](const ActivityResult& confirmation) {
+            if (confirmation.isCancelled) {
+              stayInMenu();
+              return;
+            }
+            BookActions::clearFileMetadata(bookPath);
+            if (!Storage.remove(bookPath.c_str())) {
+              LOG_ERR("BookAction", "Failed to delete file: %s", bookPath.c_str());
+              stayInMenu();
+              return;
+            }
+            RECENT_BOOKS.removeByPath(bookPath);
+            setResult(FileBrowserActionResult{static_cast<int>(FileBrowserAction::Delete)});
+            finish();
+          });
+      return;
+
+    case FileBrowserAction::DeleteStats:
+      startActivityForResult(
+          std::make_unique<ConfirmationActivity>(
+              renderer, mappedInput, BookActions::confirmationHeading(StrId::STR_DELETE_BOOK_STATS), title),
+          [this](const ActivityResult& confirmation) {
+            if (!confirmation.isCancelled) {
+              if (BookActions::deleteBookStats(bookPath)) {
+                BookActions::drawToast(renderer, tr(STR_BOOK_STATS_DELETED));
+                delay(800);
+              }
+              selectedIndex = 0;
+            }
+            stayInMenu();
+          });
+      return;
+
+    case FileBrowserAction::DeleteCache:
+      startActivityForResult(
+          std::make_unique<ConfirmationActivity>(
+              renderer, mappedInput, BookActions::confirmationHeading(StrId::STR_DELETE_CACHE), title),
+          [this](const ActivityResult& confirmation) {
+            if (!confirmation.isCancelled) {
+              if (BookActions::clearBookCache(bookPath)) {
+                BookActions::drawToast(renderer, tr(STR_DELETE_CACHE));
+                delay(800);
+              }
+              // Leave focus on a safe row so a stray Confirm cannot re-open this dialog.
+              selectedIndex = 0;
+            }
+            stayInMenu();
+          });
+      return;
+  }
+}
+
+void FileBrowserActionActivity::loop() {
+  // After long-press open or nested confirm/toast: wait until buttons *and*
+  // the opening finger are up, then drain residual edges (never activate).
+  //
+  // Without waiting on touch, the long-press lift lands on blank header space
+  // and wasScreenTapped → cancelAndClose() instantly closed the menu.
+  // Falling through used to re-fire Confirm → Delete Cache confirm loop.
+  if (awaitOpenButtonRelease) {
+    int hx = 0, hy = 0;
+    const bool touchHeld = mappedInput.hasTouch() && mappedInput.isScreenTouchHeld(hx, hy);
+    if (anyOpenOrNavButtonHeld(mappedInput) || touchHeld) {
+      // Keep suppressing while the open finger is still down.
+      if (touchHeld) {
+        mappedInput.suppressTouchContact();
+      }
+      return;
+    }
+    awaitOpenButtonRelease = false;
+
+    const bool backToLeave = mappedInput.wasReleased(MappedInputManager::Button::Back);
+    // Drain Confirm / front residuals so they cannot re-open the just-closed action.
+    (void)mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+    (void)mappedInput.wasPressed(MappedInputManager::Button::Confirm);
+    (void)mappedInput.getReleasedFrontButton();
+    // Drain residual lift / swipe from the long-press that opened us.
+    int tx = 0, ty = 0;
+    (void)mappedInput.wasScreenTapped(tx, ty);
+    (void)mappedInput.wasSwipe();
+    mappedInput.suppressTouchContact();
+
+    if (backToLeave) {
+      cancelAndClose();
+    }
+    // Quiet frame: no activateSelected, no nav. Next frame is normal menu input.
+    return;
+  }
+
+  // Idle warm: if description.html already exists, preload while the user reads
+  // the menu (file read only — never OPF here, that would freeze the menu).
+  if (bookMode && !synopsisWarmAttempted) {
+    synopsisWarmAttempted = true;
+    if (FsHelpers::hasEpubExtension(bookPath)) {
+      Epub epub(bookPath, CasperPaths::kPackageCacheRoot);
+      const std::string descPath = epub.getCachePath() + "/description.html";
+      if (Storage.exists(descPath.c_str())) {
+        const uint32_t t0 = millis();
+        warmedSynopsis = BookActions::loadBookDescription(bookPath);
+        LOG_DBG("MENU", "warm synopsis cache %lums (%u bytes)", static_cast<unsigned long>(millis() - t0),
+                static_cast<unsigned>(warmedSynopsis.size()));
+      }
+    }
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+      mappedInput.getReleasedFrontButton() == HalGPIO::BTN_BACK) {
+    // Drain both mapped and raw Back edges so Home does not re-open Menu on
+    // the residual release after finish() (minimal home Menu is BTN_BACK).
+    cancelAndClose();
+    return;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    activateSelected();
+    return;
+  }
+
+  // X4 Pro: no physical Confirm/Back — side keys only navigate. Tap a row to
+  // select (and activate on lift). Home pad closes via handleHomeGesture.
+  if (mappedInput.hasTouch() && !items.empty()) {
+    int contentTop = 0, contentHeight = 0, rowH = 0, pageItems = 0;
+    menuListMetrics(contentTop, contentHeight, rowH, pageItems);
+    const int listCount = static_cast<int>(items.size());
+    const int pageStart = std::max(0, selectedIndex / pageItems) * pageItems;
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      if (ty >= contentTop && ty < contentTop + contentHeight && rowH > 0) {
+        const int row = (ty - contentTop) / rowH;
+        const int idx = pageStart + row;
+        if (row >= 0 && row < pageItems && idx >= 0 && idx < listCount) {
+          selectedIndex = idx;
+          activateSelected();
+          return;
+        }
+      }
+      // Tap outside the list (header / empty) → close, same as Back.
+      cancelAndClose();
+      return;
+    }
+  }
+
+  buttonNavigator.onNext([this] {
+    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(items.size()));
+    requestUpdate();
+  });
+
+  buttonNavigator.onPrevious([this] {
+    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(items.size()));
+    requestUpdate();
+  });
+}
+
+void FileBrowserActionActivity::render(RenderLock&&) {
+  renderer.clearScreen();
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  const int titleX = metrics.contentSidePadding;
+  const int titleMaxWidth = std::max(0, pageWidth - titleX - metrics.contentSidePadding - kBatteryTextReserveWidth);
+  const auto titleLines =
+      renderer.wrappedText(kTitleFontId, title.c_str(), titleMaxWidth, kTitleMaxLines, EpdFontFamily::BOLD);
+  const int titleLineHeight = renderer.getLineHeight(kTitleFontId);
+  const int titleBlockHeight = static_cast<int>(titleLines.size()) * titleLineHeight +
+                               std::max(0, static_cast<int>(titleLines.size()) - 1) * kTitleLineGap;
+  const bool tallHeader = metrics.headerHeight > 60;
+  const int titleY = metrics.topPadding + (tallHeader ? metrics.batteryBarHeight + 3 : kCompactTitleY);
+  const int titleBottomPadding = tallHeader ? 8 : 4;
+  const int actionHeaderHeight =
+      std::max(metrics.headerHeight, titleY - metrics.topPadding + titleBlockHeight + titleBottomPadding);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, actionHeaderHeight}, "");
+
+  for (int i = 0; i < static_cast<int>(titleLines.size()); ++i) {
+    renderer.drawText(kTitleFontId, titleX, titleY + i * (titleLineHeight + kTitleLineGap), titleLines[i].c_str(), true,
+                      EpdFontFamily::BOLD);
+  }
+
+  const int contentTop = metrics.topPadding + actionHeaderHeight + metrics.verticalSpacing;
+  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+
+  // Custom list so we can use UI_12 (shared drawList is hardcoded to UI_10).
+  // Focus: bold only — matches BaseTheme::drawList (no black selection chips).
+  const int lineH = renderer.getLineHeight(kMenuFontId);
+  const int rowH = lineH + kMenuRowPadY * 2;
+  const int sidePad = metrics.contentSidePadding;
+  const int pageItems = std::max(1, contentHeight / rowH);
+  const int pageStart = std::max(0, selectedIndex / pageItems) * pageItems;
+  const int listCount = static_cast<int>(items.size());
+
+  for (int i = pageStart; i < listCount && i < pageStart + pageItems; ++i) {
+    const int rowY = contentTop + (i - pageStart) * rowH;
+    const bool selected = (i == selectedIndex);
+    const auto focusStyle = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+    const std::string label = I18N.get(items[static_cast<size_t>(i)].labelId);
+    const int maxLabelW = std::max(20, pageWidth - sidePad * 2 - 16);
+    // Size against BOLD so the focused row never clips when weight changes.
+    const std::string drawn = renderer.truncatedText(kMenuFontId, label.c_str(), maxLabelW, EpdFontFamily::BOLD);
+    const int textY = rowY + std::max(0, (rowH - lineH) / 2);
+    renderer.drawText(kMenuFontId, sidePad + 8, textY, drawn.c_str(), /*black=*/true, focusStyle);
+  }
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  UiGhostPolicy::displayMenuFrame(renderer);
+}

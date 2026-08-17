@@ -1,0 +1,91 @@
+#pragma once
+#include <Logging.h>
+
+#include <cassert>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "ActivityManager.h"  // for using the ActivityManager singleton
+#include "ActivityResult.h"
+#include "GfxRenderer.h"
+#include "MappedInputManager.h"
+#include "RenderLock.h"
+#include "util/ScreenshotInfo.h"
+
+class Activity {
+  friend class ActivityManager;
+
+ protected:
+  std::string name;
+  GfxRenderer& renderer;
+  MappedInputManager& mappedInput;
+
+  ActivityResultHandler resultHandler;
+  ActivityResult result;
+
+ public:
+  explicit Activity(std::string name, GfxRenderer& renderer, MappedInputManager& mappedInput)
+      : name(std::move(name)), renderer(renderer), mappedInput(mappedInput) {}
+  virtual ~Activity() = default;
+  virtual void onEnter();
+  virtual void onExit();
+  // Restored from the activity stack after a child finishes (or goHome pops to us).
+  // Default no-op; Home uses this to multipass without rebuilding from scratch.
+  virtual void onResume() {}
+  virtual void loop() {}
+
+  virtual void render(RenderLock&&) {}
+
+  // If immediate is true, the update will be triggered immediately.
+  // Otherwise, it will be deferred until the end of the current loop iteration.
+  virtual void requestUpdate(bool immediate = false);
+
+  // Request an immediate render and block until it completes.
+  virtual void requestUpdateAndWait();
+
+  virtual bool skipLoopDelay() { return false; }
+  virtual bool preventAutoSleep() { return false; }
+  virtual bool isReaderActivity() const { return false; }
+  // Returns true when the activity schedules its own forced refresh.
+  virtual bool handleForcedRefresh() { return false; }
+  virtual bool isHomeActivity() const { return false; }
+  virtual bool isSettingsActivity() const { return false; }
+  // Reader book menu (EpubReaderMenuActivity) — QR can reopen it after the book.
+  virtual bool isReaderMenuActivity() const { return false; }
+  // Flush book progress / settings before deep sleep while the activity is still alive.
+  virtual void persistProgressForSleep() {}
+  virtual bool handleHomeGesture() { return false; }
+  // Top-left swipe-down menu (touch). Readers open the book menu; default no-op.
+  virtual bool handleMenuGesture() { return false; }
+  virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
+
+  // Start a new activity without destroying the current one
+  // Note: requestUpdate() will be invoked automatically once resultHandler finishes
+  // Virtual so the reader can park heavy work (section build / font cache) first.
+  virtual void startActivityForResult(std::unique_ptr<Activity>&& activity, ActivityResultHandler resultHandler);
+
+  // Set the result to be passed back to the previous activity when this activity finishes
+  void setResult(ActivityResult&& result);
+
+  // Finish this activity and return to the previous one on the stack (if any)
+  void finish();
+
+  // Convenience method to facilitate API transition to ActivityManager
+  // TODO: remove this in near future
+  void onGoHome(HomeMenuItem item = HomeMenuItem::NONE);
+  void onSelectBook(const std::string& path);
+
+ protected:
+  enum class ListTouchResult : uint8_t {
+    None,       // touch did not hit the list
+    Consumed,   // touchdown moved the highlight (repaint already requested)
+    Activated,  // tap landed on a row: selectedIndex is updated, caller activates it
+    LongPress   // long-press on a row (e.g. book action menu)
+  };
+
+  // Shared touch handling for selectable list screens: touchdown highlights the
+  // touched row, a tap selects and reports Activated. Long-press (~400 ms) on a
+  // row reports LongPress for context menus. The caller supplies the list band.
+  ListTouchResult handleListTouch(int& selectedIndex, int itemCount, int listTop, int listHeight, bool hasSubtitle);
+};

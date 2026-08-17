@@ -1,0 +1,176 @@
+#include "EpubReaderPercentSelectionActivity.h"
+
+#include <GfxRenderer.h>
+#include <I18n.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <string>
+
+#include "MappedInputManager.h"
+#include "components/UITheme.h"
+#include "fontIds.h"
+#include "util/UiGhostPolicy.h"
+
+namespace {
+// Fine/coarse slider step sizes for percent adjustments.
+constexpr int kSmallStep = 1;
+constexpr int kLargeStep = 10;
+// Gap between the bold percent label and the slider track.
+constexpr int kPctToBarGap = 28;
+
+// Shared layout so touch targets match the painted slider.
+void percentSliderLayout(const GfxRenderer& renderer, const ThemeMetrics& metrics, const Rect& screen, int& contentTop,
+                         int& barX, int& barY, int& barWidth, int& barHeight) {
+  contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 4;
+  barWidth = 360;
+  barHeight = 16;
+  barX = screen.x + (screen.width - barWidth) / 2;
+  // Keep % label clear of the track (was only ~2× verticalSpacing under the digits).
+  const int pctLineH = std::max(18, renderer.getLineHeight(UI_12_FONT_ID));
+  barY = contentTop + pctLineH + kPctToBarGap;
+}
+}  // namespace
+
+void EpubReaderPercentSelectionActivity::onEnter() {
+  Activity::onEnter();
+  // Set up rendering task and mark first frame dirty.
+  requestUpdate();
+}
+
+void EpubReaderPercentSelectionActivity::onExit() { Activity::onExit(); }
+
+void EpubReaderPercentSelectionActivity::adjustPercent(const int delta) {
+  // Wrap using a 100-value ring (0% and 100% are the same wrap point), but keep 100 as the
+  // natural landing value when reached without crossing the boundary (e.g. 90 + 10 = 100).
+  const int raw = percent + delta;
+  if (raw > 0 && raw % 100 == 0) {
+    percent = 100;
+  } else {
+    percent = ((raw % 100) + 100) % 100;
+  }
+  requestUpdate();
+}
+
+void EpubReaderPercentSelectionActivity::loop() {
+  auto& theme = UITheme::getInstance();
+  auto metrics = theme.getMetrics();
+  Rect screen = theme.getScreenSafeArea(renderer, true, false);
+  int contentTop = 0;
+  int barX = 0;
+  int barY = 0;
+  int barWidth = 0;
+  int barHeight = 0;
+  percentSliderLayout(renderer, metrics, screen, contentTop, barX, barY, barWidth, barHeight);
+  (void)contentTop;
+  int tx = 0;
+  int ty = 0;
+
+  // Live drag on the slider: once a touch lands on the bar, the percent follows the
+  // finger until release. Runs before the Back handler because the release of a drag
+  // can also register as a swipe (e.g. the left-edge rightward back gesture) — the
+  // drag must consume it so it can't cancel the dialog or step the percent.
+  if (mappedInput.isScreenTouchHeld(tx, ty)) {
+    if (draggingBar ||
+        (tx >= barX - 20 && tx < barX + barWidth + 20 && ty >= barY - 24 && ty < barY + barHeight + 24)) {
+      draggingBar = true;
+      const int dragged = std::clamp((tx - barX) * 100 / barWidth, 0, 100);
+      if (dragged != percent) {
+        percent = dragged;
+        requestUpdate();
+      }
+      return;
+    }
+  } else if (draggingBar) {
+    // Release frame of a drag: swallow the tap/swipe events it produced.
+    draggingBar = false;
+    return;
+  }
+
+  // Back cancels, confirm selects, arrows adjust the percent.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    ActivityResult result;
+    result.isCancelled = true;
+    setResult(std::move(result));
+    finish();
+    return;
+  }
+
+  if (mappedInput.wasScreenTapped(tx, ty) && tx >= barX - 20 && tx < barX + barWidth + 20 && ty >= barY - 24 &&
+      ty < barY + barHeight + 24) {
+    percent = std::clamp((tx - barX) * 100 / barWidth, 0, 100);
+    requestUpdate();
+    return;
+  }
+
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Right) {
+    adjustPercent(kLargeStep);
+    return;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Left) {
+    adjustPercent(-kLargeStep);
+    return;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    setResult(PercentResult{percent});
+    finish();
+    return;
+  }
+
+  // Match menus app-wide: logical Up/Down = 1%, Left/Right = 10%.
+  // MappedInputManager applies the user's button remap.
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this] { adjustPercent(-kSmallStep); });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down}, [this] { adjustPercent(kSmallStep); });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustPercent(-kLargeStep); });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustPercent(kLargeStep); });
+}
+
+void EpubReaderPercentSelectionActivity::render(RenderLock&&) {
+  renderer.clearScreen();
+
+  auto& theme = UITheme::getInstance();
+  auto metrics = theme.getMetrics();
+  Rect screen = theme.getScreenSafeArea(renderer, true, false);
+
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_GO_TO_PERCENT));
+
+  int contentTop = 0;
+  int barX = 0;
+  int barY = 0;
+  int barWidth = 0;
+  int barHeight = 0;
+  percentSliderLayout(renderer, metrics, screen, contentTop, barX, barY, barWidth, barHeight);
+
+  const std::string percentText = std::to_string(percent) + "%";
+  UITheme::drawCenteredText(renderer, screen, UI_12_FONT_ID, contentTop, percentText.c_str(), true,
+                            EpdFontFamily::BOLD);
+
+  // Draw slider track.
+  renderer.drawRect(barX, barY, barWidth, barHeight);
+
+  // Fill slider based on percent.
+  const int fillWidth = (barWidth - 4) * percent / 100;
+  if (fillWidth > 0) {
+    renderer.fillRect(barX + 2, barY + 2, fillWidth, barHeight - 4);
+  }
+
+  // Draw a simple knob centered at the current percent.
+  const int knobX = barX + 2 + fillWidth - 2;
+  renderer.fillRect(knobX, barY - 4, 4, barHeight + 8, true);
+
+  // Logical axes (same scheme as lists/menus): Up/Down fine, Left/Right coarse.
+  char line[80];
+  snprintf(line, sizeof(line), "%s / %s: %d%%", tr(STR_DIR_UP), tr(STR_DIR_DOWN), kSmallStep);
+  UITheme::drawCenteredText(renderer, screen, SMALL_FONT_ID, barY + 30, line, true);
+  snprintf(line, sizeof(line), "%s / %s: %d%%", tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT), kLargeStep);
+  UITheme::drawCenteredText(renderer, screen, SMALL_FONT_ID, barY + 52, line, true);
+
+  // Button hints follow the current remapped front layout.
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "-", "+");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  UiGhostPolicy::displayMenuFrame(renderer);
+}

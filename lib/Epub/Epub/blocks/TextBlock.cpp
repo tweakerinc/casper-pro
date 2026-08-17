@@ -1,0 +1,472 @@
+#include "TextBlock.h"
+
+#include <BidiUtils.h>
+#include <GfxRenderer.h>
+#include <Logging.h>
+#include <Memory.h>
+#include <Serialization.h>
+#include <Utf8.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <string>
+
+#include "Epub/css/StyleResolve.h"
+
+namespace {
+constexpr char GUIDE_DOT_UTF8[] = "\xc2\xb7";  // U+00B7 middle dot
+}  // namespace
+
+size_t TextBlock::arenaSize(const uint16_t wordCount, const bool hasFocus, const bool hasGuideDots,
+                            const uint16_t textBytes) {
+  // Layout documented in TextBlock.h: 16-bit arrays first, then 8-bit arrays, then text.
+  size_t size = static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(int16_t) + sizeof(uint8_t));
+  if (hasFocus) {
+    size += static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(uint8_t));
+  }
+  if (hasGuideDots) {
+    size += static_cast<size_t>(wordCount) * sizeof(uint16_t);
+  }
+  return size + textBytes;
+}
+
+void TextBlock::bindArenaPointers() {
+  uint8_t* base = arena.get();
+  const size_t wc = numWords;
+  textOffArr = reinterpret_cast<const uint16_t*>(base);
+  xposArr = reinterpret_cast<const int16_t*>(base + wc * 2);
+  size_t off = wc * 4;
+  if (focusPresent) {
+    focusSuffixXArr = reinterpret_cast<const uint16_t*>(base + off);
+    off += wc * 2;
+  }
+  if (guideDotsPresent) {
+    guideDotXOffsetArr = reinterpret_cast<const uint16_t*>(base + off);
+    off += wc * 2;
+  }
+  stylesArr = base + off;
+  off += wc;
+  if (focusPresent) {
+    focusBoundaryArr = base + off;
+    off += wc;
+  }
+  textArr = reinterpret_cast<const char*>(base + off);
+}
+
+TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
+                     const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
+                     const std::vector<uint16_t>& focusSuffixX, const std::vector<uint16_t>& guideDotXOffset,
+                     const BlockStyle& blockStyle)
+    : blockStyle(blockStyle) {
+  const bool hasFocus = !focusBoundary.empty();
+  const bool hasGuide = !guideDotXOffset.empty();
+  if (words.size() != wordXpos.size() || words.size() != wordStyles.size() || words.size() > 10000 ||
+      (hasFocus && (words.size() != focusBoundary.size() || words.size() != focusSuffixX.size())) ||
+      (hasGuide && words.size() != guideDotXOffset.size())) {
+    LOG_ERR("TXB",
+            "Construction failed: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u, dots=%u)",
+            static_cast<uint32_t>(words.size()), static_cast<uint32_t>(wordXpos.size()),
+            static_cast<uint32_t>(wordStyles.size()), static_cast<uint32_t>(focusBoundary.size()),
+            static_cast<uint32_t>(focusSuffixX.size()), static_cast<uint32_t>(guideDotXOffset.size()));
+    isValid = false;
+    return;
+  }
+
+  numWords = static_cast<uint16_t>(words.size());
+  focusPresent = hasFocus;
+  guideDotsPresent = hasGuide;
+  if (numWords == 0) {
+    return;  // valid empty block, no arena
+  }
+
+  size_t totalText = 0;
+  for (const auto& w : words) totalText += w.size() + 1;
+  if (totalText > UINT16_MAX) {
+    LOG_ERR("TXB", "Construction failed: text size %u exceeds arena limit", static_cast<uint32_t>(totalText));
+    numWords = 0;
+    focusPresent = false;
+    guideDotsPresent = false;
+    isValid = false;
+    return;
+  }
+  textBytes = static_cast<uint16_t>(totalText);
+
+  const size_t size = arenaSize(numWords, focusPresent, guideDotsPresent, textBytes);
+  arena = makeUniqueNoThrow<uint8_t[]>(size);
+  if (!arena) {
+    LOG_ERR("TXB", "OOM: arena %u bytes", static_cast<uint32_t>(size));
+    numWords = 0;
+    textBytes = 0;
+    focusPresent = false;
+    guideDotsPresent = false;
+    isValid = false;
+    return;
+  }
+  bindArenaPointers();
+
+  auto* textOff = const_cast<uint16_t*>(textOffArr);
+  auto* xpos = const_cast<int16_t*>(xposArr);
+  auto* styles = const_cast<uint8_t*>(stylesArr);
+  auto* text = const_cast<char*>(textArr);
+  uint16_t off = 0;
+  for (uint16_t i = 0; i < numWords; i++) {
+    textOff[i] = off;
+    xpos[i] = wordXpos[i];
+    styles[i] = static_cast<uint8_t>(wordStyles[i]);
+    memcpy(text + off, words[i].data(), words[i].size());
+    off += static_cast<uint16_t>(words[i].size());
+    text[off++] = '\0';
+  }
+  if (focusPresent) {
+    auto* suffixX = const_cast<uint16_t*>(focusSuffixXArr);
+    auto* boundary = const_cast<uint8_t*>(focusBoundaryArr);
+    for (uint16_t i = 0; i < numWords; i++) {
+      suffixX[i] = focusSuffixX[i];
+      boundary[i] = focusBoundary[i];
+    }
+  }
+  if (guideDotsPresent) {
+    auto* dots = const_cast<uint16_t*>(guideDotXOffsetArr);
+    for (uint16_t i = 0; i < numWords; i++) {
+      dots[i] = guideDotXOffset[i];
+    }
+  }
+}
+
+void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
+  if (!isValid) {
+    LOG_ERR("TXB", "Render skipped: invalid block");
+    return;
+  }
+
+  // Rivulet: paint with block sizeStep, or absolute override (drop-cap larger face).
+  // Never skip sizeStep (0 means "two steps smaller", not unset).
+  // Match measure: real lineCompression + embeddedStyle from setPaintStyleResolveParams.
+  int paintFontId = fontId;
+  StyleResolveContext paintCtx{};
+  float paintLc = 1.0f;
+  bool paintEmbedded = true;
+  getPaintStyleResolveParams(paintLc, paintEmbedded);
+  if (blockStyle.paintFontIdOverride != 0) {
+    paintFontId = blockStyle.paintFontIdOverride;
+  } else {
+    static int s_cachedBaseFontId = 0;
+    static float s_cachedLc = -1.0f;
+    static bool s_cachedEmbedded = false;
+    static StyleResolveContext s_rivuletPaintCtx;
+    if (s_cachedBaseFontId != fontId || s_cachedLc != paintLc || s_cachedEmbedded != paintEmbedded) {
+      initStyleResolveContext(s_rivuletPaintCtx, fontId, paintLc, paintEmbedded, renderer);
+      s_cachedBaseFontId = fontId;
+      s_cachedLc = paintLc;
+      s_cachedEmbedded = paintEmbedded;
+    }
+    paintCtx = s_rivuletPaintCtx;
+    paintFontId = resolveRelativeFontId(s_rivuletPaintCtx, blockStyle.sizeStep);
+  }
+
+  const bool scanning = renderer.isFontCacheScanning();
+  const int ascender = renderer.getFontAscenderSize(paintFontId);
+  const bool useSyntheticScale =
+      blockStyle.syntheticScale || sizeStepNeedsSyntheticScale(paintCtx, blockStyle.sizeStep);
+  // Drop-cap / 2× paint is top-aligned to PageLine y. Half-leading would center a
+  // 1× metric inside a tall box and shove the letter into the status bar.
+  bool hasDropCapWord = useSyntheticScale;
+  if (!hasDropCapWord) {
+    for (uint16_t i = 0; i < numWords; ++i) {
+      if ((wordStyle(i) & EpdFontFamily::DROP_CAP) != 0) {
+        hasDropCapWord = true;
+        break;
+      }
+    }
+  }
+  // Half-leading: when CSS line-height > content metrics, center the ink in the line box.
+  int paintY = y;
+  if (!hasDropCapWord && blockStyle.lineHeightPx > 0) {
+    const int contentH = std::max(1, renderer.getLineHeight(paintFontId, paintLc));
+    const int extra = static_cast<int>(blockStyle.lineHeightPx) - contentH;
+    if (extra > 1) {
+      paintY += extra / 2;
+    }
+  }
+
+  struct DecorationLineTracker {
+    EpdFontFamily::Style style;
+    int yOffset;
+    int startX = -1;
+    int endX = -1;
+    int yPos = 0;
+
+    bool active() const { return startX != -1; }
+    void reset() {
+      startX = -1;
+      endX = -1;
+      yPos = 0;
+    }
+  };
+
+  DecorationLineTracker decorationLines[] = {
+      {EpdFontFamily::UNDERLINE, ascender + 2},
+      {EpdFontFamily::STRIKETHROUGH, ascender * 4 / 5},
+  };
+
+  const auto flushDecoration = [&](DecorationLineTracker& line) {
+    if (line.active()) {
+      renderer.drawLine(line.startX, line.yPos, line.endX, line.yPos, 2, true);
+      line.reset();
+    }
+  };
+  const auto flushDecorations = [&]() {
+    for (auto& line : decorationLines) {
+      flushDecoration(line);
+    }
+  };
+
+  for (uint16_t i = 0; i < numWords; i++) {
+    const char* word = wordText(i);
+    const int wordX = xposArr[i] + x;
+    EpdFontFamily::Style currentStyle = wordStyle(i);
+    if (useSyntheticScale) {
+      currentStyle = static_cast<EpdFontFamily::Style>(currentStyle | EpdFontFamily::DROP_CAP);
+    }
+    const auto baseDir =
+        static_cast<BidiUtils::BidiBaseDir>(BidiUtils::detectParagraphLevel(word, blockStyle.isRtl ? 1 : 0));
+    const uint8_t boundary = focusBoundary(i);
+
+    int wordY = paintY;
+    if ((currentStyle & EpdFontFamily::SUP) != 0) {
+      wordY -= ascender * 2 / 5;
+    } else if ((currentStyle & EpdFontFamily::SUB) != 0) {
+      wordY += ascender / 4;
+    }
+
+    // Synthetic small-caps: uppercase (Latin-focused) into a small stack string.
+    std::string smallCapsScratch;
+    const char* drawWord = word;
+    if (blockStyle.smallCaps && !scanning) {
+      smallCapsScratch.reserve(wordTextLen(i) + 1);
+      const auto* p = reinterpret_cast<const unsigned char*>(word);
+      while (*p) {
+        uint32_t cp = utf8NextCodepoint(&p);
+        if (cp == 0) break;
+        if (cp >= 'a' && cp <= 'z') {
+          cp = cp - 'a' + 'A';
+        } else if (cp >= 0x00E0 && cp <= 0x00F6) {
+          cp -= 0x20;
+        } else if (cp >= 0x00F8 && cp <= 0x00FE) {
+          cp -= 0x20;
+        }
+        utf8AppendCodepoint(cp, smallCapsScratch);
+      }
+      drawWord = smallCapsScratch.c_str();
+    }
+
+    // DROP_CAP nearest-neighbor scale: block override (metric drop-cap) or default 2×.
+    const int dropNn =
+        ((currentStyle & EpdFontFamily::DROP_CAP) != 0)
+            ? (blockStyle.paintGlyphScale >= 2 ? static_cast<int>(blockStyle.paintGlyphScale) : 2)
+            : 0;
+
+    if (boundary > 0 && !blockStyle.smallCaps) {
+      static constexpr size_t MAX_FOCUS_PREFIX_BYTES = 9 * 4 + 1;
+      char boldBuf[40];
+      static_assert(sizeof(boldBuf) >= MAX_FOCUS_PREFIX_BYTES,
+                    "boldBuf too small for max focus prefix (9 codepoints * 4 UTF-8 bytes + null)");
+      const auto boldStyle = static_cast<EpdFontFamily::Style>(currentStyle | EpdFontFamily::BOLD);
+      const size_t boldLen =
+          std::min<size_t>({static_cast<size_t>(boundary), static_cast<size_t>(wordTextLen(i)), sizeof(boldBuf) - 1});
+      memcpy(boldBuf, word, boldLen);
+      boldBuf[boldLen] = '\0';
+      renderer.drawText(paintFontId, wordX, wordY, boldBuf, true, boldStyle, baseDir, dropNn);
+      const int suffixX = wordX + focusSuffixXArr[i];
+      renderer.drawText(paintFontId, suffixX, wordY, word + boldLen, true, currentStyle, baseDir, dropNn);
+    } else {
+      renderer.drawText(paintFontId, wordX, wordY, drawWord, true, currentStyle, baseDir, dropNn);
+    }
+
+    // Guide Dots: · placed after this word (offset measured at layout time).
+    const uint16_t dotOffset = guideDotXOffset(i);
+    if (dotOffset > 0 && !scanning) {
+      renderer.drawText(paintFontId, wordX + static_cast<int>(dotOffset), wordY, GUIDE_DOT_UTF8, true,
+                        EpdFontFamily::REGULAR, baseDir);
+    }
+
+    if (scanning) {
+      continue;
+    }
+
+    if (EpdFontFamily::hasTextDecoration(currentStyle)) {
+      int lineStartX = wordX;
+      int lineWidth = renderer.getTextWidth(paintFontId, word, currentStyle, baseDir);
+
+      if ((currentStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) {
+        lineWidth = (lineWidth + 1) / 2;
+      }
+
+      if (wordTextLen(i) >= 3 && static_cast<uint8_t>(word[0]) == 0xE2 && static_cast<uint8_t>(word[1]) == 0x80 &&
+          static_cast<uint8_t>(word[2]) == 0x83) {
+        const char* visibleText = word + 3;
+        lineStartX += renderer.getTextAdvanceX(paintFontId, "\xe2\x80\x83", currentStyle);
+        lineWidth = renderer.getTextWidth(paintFontId, visibleText, currentStyle, baseDir);
+        if ((currentStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) {
+          lineWidth = (lineWidth + 1) / 2;
+        }
+      }
+
+      for (auto& line : decorationLines) {
+        if ((currentStyle & line.style) == 0) {
+          flushDecoration(line);
+          continue;
+        }
+
+        const int lineY = wordY + line.yOffset;
+        if (line.active() && line.yPos != lineY) {
+          flushDecoration(line);
+        }
+        if (!line.active()) {
+          line.startX = lineStartX;
+          line.yPos = lineY;
+        }
+        line.endX = lineStartX + lineWidth;
+      }
+    } else {
+      flushDecorations();
+    }
+  }
+  flushDecorations();
+}
+
+bool TextBlock::serialize(HalFile& file) const {
+  if (!isValid) {
+    LOG_ERR("TXB", "Serialization failed: invalid block");
+    return false;
+  }
+
+  serialization::writePod(file, numWords);
+  serialization::writePod(file, static_cast<uint8_t>(focusPresent ? 1 : 0));
+  serialization::writePod(file, static_cast<uint8_t>(guideDotsPresent ? 1 : 0));
+  serialization::writePod(file, textBytes);
+  if (numWords > 0) {
+    const size_t size = arenaSize(numWords, focusPresent, guideDotsPresent, textBytes);
+    if (file.write(arena.get(), size) != size) {
+      LOG_ERR("TXB", "Serialization failed: arena write (%u bytes)", static_cast<uint32_t>(size));
+      return false;
+    }
+  }
+
+  serialization::writePod(file, blockStyle.alignment);
+  serialization::writePod(file, blockStyle.textAlignDefined);
+  serialization::writePod(file, blockStyle.marginTop);
+  serialization::writePod(file, blockStyle.marginBottom);
+  serialization::writePod(file, blockStyle.marginLeft);
+  serialization::writePod(file, blockStyle.marginRight);
+  serialization::writePod(file, blockStyle.paddingTop);
+  serialization::writePod(file, blockStyle.paddingBottom);
+  serialization::writePod(file, blockStyle.paddingLeft);
+  serialization::writePod(file, blockStyle.paddingRight);
+  serialization::writePod(file, blockStyle.textIndent);
+  serialization::writePod(file, blockStyle.textIndentDefined);
+  serialization::writePod(file, blockStyle.isRtl);
+  serialization::writePod(file, blockStyle.directionDefined);
+  serialization::writePod(file, blockStyle.sizeStep);
+  serialization::writePod(file, blockStyle.lineHeightPx);
+  serialization::writePod(file, blockStyle.paintFontIdOverride);
+  serialization::writePod(file, static_cast<uint8_t>(blockStyle.smallCaps ? 1 : 0));
+  serialization::writePod(file, static_cast<uint8_t>(blockStyle.syntheticScale ? 1 : 0));
+  serialization::writePod(file, blockStyle.paintGlyphScale);
+
+  return true;
+}
+
+std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
+  uint16_t wc;
+  uint8_t hasFocus;
+  uint8_t hasGuide;
+  uint16_t textBytes;
+  serialization::readPod(file, wc);
+  serialization::readPod(file, hasFocus);
+  serialization::readPod(file, hasGuide);
+  serialization::readPod(file, textBytes);
+
+  if (wc > 10000) {
+    LOG_ERR("TXB", "Deserialization failed: word count %u exceeds maximum", wc);
+    return nullptr;
+  }
+  if ((wc == 0 && textBytes != 0) || (wc > 0 && textBytes < wc)) {
+    LOG_ERR("TXB", "Deserialization failed: bad text size %u for %u words", textBytes, wc);
+    return nullptr;
+  }
+
+  std::unique_ptr<TextBlock> block(new (std::nothrow) TextBlock());
+  if (!block) {
+    LOG_ERR("TXB", "OOM: TextBlock");
+    return nullptr;
+  }
+  block->numWords = wc;
+  block->textBytes = textBytes;
+  block->focusPresent = hasFocus != 0;
+  block->guideDotsPresent = hasGuide != 0;
+
+  if (wc > 0) {
+    const size_t size = arenaSize(wc, block->focusPresent, block->guideDotsPresent, textBytes);
+    block->arena = makeUniqueNoThrow<uint8_t[]>(size);
+    if (!block->arena) {
+      LOG_ERR("TXB", "OOM: arena %u bytes", static_cast<uint32_t>(size));
+      return nullptr;
+    }
+    if (file.read(block->arena.get(), size) != size) {
+      LOG_ERR("TXB", "Deserialization failed: arena read (%u bytes)", static_cast<uint32_t>(size));
+      return nullptr;
+    }
+    block->bindArenaPointers();
+
+    const uint16_t* textOff = block->textOffArr;
+    const char* text = block->textArr;
+    if (textOff[0] != 0 || text[textBytes - 1] != '\0') {
+      LOG_ERR("TXB", "Deserialization failed: corrupt text layout");
+      return nullptr;
+    }
+    for (uint16_t i = 1; i < wc; i++) {
+      if (textOff[i] <= textOff[i - 1] || textOff[i] >= textBytes || text[textOff[i] - 1] != '\0') {
+        LOG_ERR("TXB", "Deserialization failed: corrupt word offset %u", i);
+        return nullptr;
+      }
+    }
+  }
+
+  BlockStyle& blockStyle = block->blockStyle;
+  serialization::readPod(file, blockStyle.alignment);
+  serialization::readPod(file, blockStyle.textAlignDefined);
+  serialization::readPod(file, blockStyle.marginTop);
+  serialization::readPod(file, blockStyle.marginBottom);
+  serialization::readPod(file, blockStyle.marginLeft);
+  serialization::readPod(file, blockStyle.marginRight);
+  serialization::readPod(file, blockStyle.paddingTop);
+  serialization::readPod(file, blockStyle.paddingBottom);
+  serialization::readPod(file, blockStyle.paddingLeft);
+  serialization::readPod(file, blockStyle.paddingRight);
+  serialization::readPod(file, blockStyle.textIndent);
+  serialization::readPod(file, blockStyle.textIndentDefined);
+  serialization::readPod(file, blockStyle.isRtl);
+  serialization::readPod(file, blockStyle.directionDefined);
+  serialization::readPod(file, blockStyle.sizeStep);
+  serialization::readPod(file, blockStyle.lineHeightPx);
+  serialization::readPod(file, blockStyle.paintFontIdOverride);
+  uint8_t smallCapsU8 = 0;
+  uint8_t syntheticScaleU8 = 0;
+  serialization::readPod(file, smallCapsU8);
+  serialization::readPod(file, syntheticScaleU8);
+  blockStyle.smallCaps = smallCapsU8 != 0;
+  blockStyle.syntheticScale = syntheticScaleU8 != 0;
+  // v73+: paintGlyphScale (0 = default 2× when DROP_CAP). SECTION version invalidates older bins.
+  serialization::readPod(file, blockStyle.paintGlyphScale);
+  if (blockStyle.paintGlyphScale > 4) {
+    blockStyle.paintGlyphScale = 0;
+  }
+  // Guard corrupt/old partial reads: sizeStep must stay in 0..4; default to base.
+  if (blockStyle.sizeStep > SIZE_STEP_MAX) {
+    blockStyle.sizeStep = SIZE_STEP_BASE;
+  }
+
+  return block;
+}
