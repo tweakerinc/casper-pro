@@ -110,8 +110,8 @@ void holdRailOff(int8_t pin, uint8_t offLevel) {
   gpio_hold_en(g);
 }
 
-// Keep power.latch* asserted (HIGH) through deep sleep so master rails (e.g.
-// X4 Pro GPIO1) do not float when pads are isolated.
+// Keep a stay-alive latch asserted (HIGH) through deep sleep (Sticky PWR_HOLD).
+// Peripheral load-switches use holdRailOff(LOW) instead — see keepAssertedInSleep.
 void holdLatchOn(int8_t pin) {
   if (pin < 0) return;
   if (BoardConfig::latchConflictsWithBus(pin)) return;
