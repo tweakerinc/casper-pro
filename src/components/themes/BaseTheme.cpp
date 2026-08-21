@@ -571,7 +571,8 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
                          const std::function<UIIcon(int index)>& rowIcon,
                          const std::function<std::string(int index)>& rowValue, bool highlightValue,
                          const std::function<bool(int index)>& rowDimmed,
-                         const std::function<bool(int index)>& rowApplied) const {
+                         const std::function<bool(int index)>& rowApplied,
+                         const std::function<bool(int index)>& rowCentered) const {
   (void)highlightValue;
   // Icons reserved title width for no gain on Bare/Penumbra; ignore rowIcon.
   (void)rowIcon;
@@ -626,6 +627,10 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 
   // If selection is below what a dense pack from pageStart can show, slide start up.
   auto measureRowH = [&](int i) -> int {
+    // Section headers: tab-bar font (UI_12) + two blank lines of air underneath.
+    if (rowCentered && rowCentered(i)) {
+      return renderer.getLineHeight(UI_12_FONT_ID) * 3;
+    }
     int rowTextWidth = contentWidth - BaseMetrics::values.contentSidePadding * 2;
     const auto itemName = rowTitle(i);
     std::vector<std::string> titleLines =
@@ -671,7 +676,8 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
     if (applied) rowTextWidth -= kRadioReserve;
 
     std::string valueText;
-    if (rowValue != nullptr) {
+    const bool centered = rowCentered && rowCentered(i);
+    if (!centered && rowValue != nullptr) {
       valueText = rowValue(i);
       if (!valueText.empty()) {
         int maxValW = std::max(0, rowTextWidth - 40 - minValueGap);
@@ -695,7 +701,7 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 
     std::string subtitleDrawn;
     int subtitleLineH = 0;
-    if (rowSubtitle != nullptr) {
+    if (!centered && rowSubtitle != nullptr) {
       std::string subtitleText = rowSubtitle(i);
       if (!subtitleText.empty()) {
         subtitleDrawn = renderer.truncatedText(SMALL_FONT_ID, subtitleText.c_str(), rowTextWidth);
@@ -703,22 +709,33 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       }
     }
 
-    const int rowHeight = computeListRowHeightForLines(renderer, !subtitleDrawn.empty() || hasSubtitleCb, nTitleLines);
+    const int rowHeight = centered ? renderer.getLineHeight(UI_12_FONT_ID) * 3
+                                   : computeListRowHeightForLines(renderer, !subtitleDrawn.empty() || hasSubtitleCb,
+                                                                  nTitleLines);
     if (i > pageStartIndex && itemY + rowHeight > rect.y + rect.height) {
       break;
     }
 
     // Focus: bold only on button-nav boards. Touch UI is tap-to-open — no scroll highlight.
+    // Section headers: same size as Settings tab labels (UI_12 bold).
     const bool touchUi = gpio.hasTouch();
     const bool showFocus = focused && !touchUi;
     const int blockH = titleBlockH + (subtitleDrawn.empty() ? 0 : (kBaseTitleSubtitleGap + subtitleLineH));
-    int textY = itemY + std::max(0, (rowHeight - blockH) / 2);
+    int textY = itemY + (centered ? 0 : std::max(0, (rowHeight - blockH) / 2));
     const int textX = rect.x + BaseMetrics::values.contentSidePadding;
     const auto focusStyle = showFocus ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
 
-    for (size_t li = 0; li < titleLines.size(); ++li) {
-      const int ly = textY + static_cast<int>(li) * lineStep;
-      renderer.drawText(titleFont, textX, ly, titleLines[li].c_str(), /*black=*/true, focusStyle);
+    if (centered) {
+      const int headerFont = UI_12_FONT_ID;
+      for (size_t li = 0; li < titleLines.size(); ++li) {
+        const int ly = textY + static_cast<int>(li) * lineStep;
+        renderer.drawCenteredText(headerFont, ly, titleLines[li].c_str(), /*black=*/true, EpdFontFamily::BOLD);
+      }
+    } else {
+      for (size_t li = 0; li < titleLines.size(); ++li) {
+        const int ly = textY + static_cast<int>(li) * lineStep;
+        renderer.drawText(titleFont, textX, ly, titleLines[li].c_str(), /*black=*/true, focusStyle);
+      }
     }
 
     // Apply checkerboard dither to create gray text effect for dimmed items
@@ -1161,15 +1178,28 @@ Rect BaseTheme::drawTopLeftStatus(const GfxRenderer& renderer, const char* messa
   const int x = viewLeft + kPadX;
   const int y = viewTop + kPadY;
   // White wipe under the label so residual home/reader ink does not dirty the word.
-  const int wipeW = textW + 4;
+  //
+  // Size the wipe to the WIDEST corner status, not to this message. Sizing per
+  // message meant a short word left whatever sat in the left status slot poking
+  // out to its right: "Loading" covered the battery %, but "Saving" on book exit
+  // did not. A constant box also stops the wipe jittering as the word changes.
+  int statusW = textW;
+  for (const StrId id : {StrId::STR_LOADING_POPUP, StrId::STR_STATUS_SAVING_STATS, StrId::STR_STATUS_OPENING,
+                         StrId::STR_STATUS_DELETING}) {
+    statusW = std::max(statusW, renderer.getTextWidth(kFont, I18N.get(id)));
+  }
+  // Never eat into the middle slot — clamp to just short of centre.
+  const int maxWipeW = std::max(textW + 4, (renderer.getScreenWidth() / 2) - x);
+  const int wipeW = std::min(statusW + 4, maxWipeW);
   const int wipeH = textH + 2;
   renderer.fillRect(x - 1, y - 1, wipeW + 2, wipeH + 2, false);
   renderer.drawText(kFont, x, y, message, /*black=*/true);
 
   if (refresh) {
-    // FAST only — the old center Loading pill used HALF and ghosted into the next
-    // page. A few glyphs in the corner leave almost no residual under FAST.
-    displayPopupWithDarkMode(renderer, HalDisplay::FAST_REFRESH);
+    // Windowed FAST on the wipe only. A full displayBuffer(FAST) raced the reader
+    // activity swap and made "Opening" invisible (user never saw the cue even with
+    // Dark Mode off). Corner glyphs leave no residual worth a full-frame refresh.
+    renderer.displayWindow(x - 1, y - 1, wipeW + 2, wipeH + 2);
   }
   return Rect{x - 1, y - 1, wipeW + 2, wipeH + 2};
 }

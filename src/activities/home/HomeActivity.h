@@ -7,6 +7,7 @@
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "util/ButtonNavigator.h"
+#include "util/HomeBookIndexer.h"
 
 struct RecentBook;
 struct Rect;
@@ -81,6 +82,26 @@ class HomeActivity final : public Activity {
   bool menuLongPressFired = false;
   // Stats: side Left/Right toggled under-box title ↔ lifetime.
   bool forceStatsUnderBoxRepaint = false;
+  // Resume path: paint the shell FAST, then run the anti-ghost HALF just after,
+  // so Home is visible while it scrubs instead of the user staring at the old
+  // frame for the whole refresh.
+  bool deferScrubAfterFirstPaint_ = false;
+
+  // Whole-book page-map indexing, run only while Home sits idle. See
+  // HomeBookIndexer: Home is the one place no chapter is resident, so indexing
+  // costs nothing to evict and never disturbs a page turn or reading-pace stats.
+  HomeBookIndexer bookIndexer_;
+  unsigned long indexerIdleSinceMs_ = 0;
+  unsigned long lastIndexStepMs_ = 0;
+  // Home must be untouched this long before indexing may take the bus, and this
+  // long between chapters so input is always sampled in between.
+  // Background whole-book indexing. Off until HtmlToIr can convert a chapter
+  // incrementally — see tickBookIndexer for the measurements that closed it.
+  static constexpr bool kBookIndexerEnabled = false;
+  static constexpr unsigned long kIndexIdleMs = 8000;
+  static constexpr unsigned long kIndexGapMs = 600;
+  void tickBookIndexer();
+
   // Penumbra (X3): windowed digit-only (or clock-block) refresh — no full-frame flash.
   bool forcePenumbraClockRepaint = false;
   // Last hero time string drawn on panel ("H:MM"); used for minute-change detect.

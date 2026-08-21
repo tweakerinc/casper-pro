@@ -75,7 +75,11 @@ constexpr int kStatRowGap = 12;
 constexpr int kStatRowGapX4 = 10;
 // Title ↔ grid and grid ↔ "STATS" / "LIFETIME" caption share the same air.
 constexpr int kStatsStackGap = 16;
-// Progress face: grid slightly higher, caption slightly lower (more air under the grid).
+// X3 under-panel: keep the stats chrome clear of page dots, and top-pin tightly so
+// Book Stats + Lifetime share the same title/grid/footer Y when side-swiping.
+constexpr int kStatsTopInsetX3 = 2;
+constexpr int kStatsFooterDotsClearance = 14;  // caption bottom → dots strip
+// X4: grid slightly higher, caption slightly lower (more air under the grid).
 constexpr int kStatsStackGapX4Top = 8;
 constexpr int kStatsStackGapX4Footer = 22;
 // Progress-face upper half: modest pad under chrome; internal gaps fill the rest of the half.
@@ -612,14 +616,15 @@ int measureX3TitleAuthorBlockH(const GfxRenderer& renderer, const ContentBand& b
 int measureX3StatsStyleBlockH(const GfxRenderer& renderer) {
   const int captionH = renderer.getLineHeight(kLabelFontId);
   const int pairH = statPairHeight(renderer);
-  // Book stats on clock face is 3 rows when RTC tracking is on (Started + Est. Finish),
-  // matching BookStatsView / Dashboard. Lifetime stays 2 rows but shares this max.
+  // Book stats on X3 is 3 rows when RTC tracking is on (Started + Est. Finish),
+  // matching BookStatsView / Dashboard. Lifetime stays 2 rows but shares this max
+  // so equal-gap layout (and footer Y) stay mode-independent.
   const int gridH = pairH * 3 + kStatRowGap * 2;
-  // Clock-face stats: book title + grid + footer caption. Reserve title/footer air so
-  // equal-gap layout still fits when stats is the tallest page. Compact on short panels.
   const int titleH = renderer.getLineHeight(kStatsBookTitleFontId);
-  const int reserveAir = isCompactClockFace(renderer) ? 16 : 28;
-  return titleH + reserveAir + gridH + reserveAir + reserveAir / 2 + captionH;
+  // Compact stack: title → gap → grid → gap → caption → dots clearance.
+  // Must match layoutX3StatsChrome() so G / lowerTop stay stable across pages.
+  return kStatsTopInsetX3 + titleH + kStatsStackGap + gridH + kStatsStackGap + captionH +
+         kStatsFooterDotsClearance;
 }
 
 // Stable lower-block height for X3 equal-gap layout. MUST be mode-independent:
@@ -1006,9 +1011,52 @@ const char* lastReadBookTitle(const std::vector<RecentBook>& books) {
   return book.title.empty() ? book.path.c_str() : book.title.c_str();
 }
 
+// Shared X3 Book-Stats / Lifetime chrome. Both pages must use the same titleY /
+// gridY / footerY so side-swiping does not jump. Footer is locked to the tall
+// (3-row) stack so Lifetime's shorter grid still lands the caption in sync, and
+// clearance keeps "STATS" / "LIFETIME" above the page-dot strip.
+struct X3StatsChrome {
+  int titleY = 0;
+  int gridY = 0;
+  int footerY = 0;
+  int gridAvailH = 0;  // space reserved for the tallest (3-row) grid
+  int zoneTop = 0;
+  int zoneBottom = 0;
+};
+
+X3StatsChrome layoutX3StatsChrome(const GfxRenderer& renderer, const ContentBand& band,
+                                  const bool showBookTitle, const int titleH) {
+  X3StatsChrome out;
+  out.zoneTop = band.pinBlocks ? band.lowerTop : (band.midY + kRuleThickness);
+  out.zoneBottom = band.contentBottom - penumbraPageDotsStripH();
+  const int captionH = renderer.getLineHeight(kLabelFontId);
+  const int pairH = statPairHeight(renderer);
+  const int maxGridH = pairH * 3 + kStatRowGap * 2;
+
+  const int th = showBookTitle ? titleH : 0;
+  const int titleGap = showBookTitle ? kStatsStackGap : 0;
+
+  // Prefer a compact top-aligned stack (raises the whole section vs the old
+  // bottom-parked caption that collided with the dots).
+  int y = out.zoneTop + kStatsTopInsetX3;
+  out.titleY = y;
+  y += th + titleGap;
+  out.gridY = y;
+
+  const int maxFooterY = out.zoneBottom - captionH - kStatsFooterDotsClearance;
+  int footerY = out.gridY + maxGridH + kStatsStackGap;
+  if (footerY > maxFooterY) footerY = maxFooterY;
+  // Never let the caption sit under the grid with less than a stack gap, and
+  // never let it invade the dots strip.
+  if (footerY < out.gridY + kStatsStackGap) footerY = out.gridY + kStatsStackGap;
+  if (footerY > maxFooterY) footerY = maxFooterY;
+  out.footerY = footerY;
+  out.gridAvailH = std::max(1, footerY - kStatsStackGap - out.gridY);
+  return out;
+}
+
 // Layout:
-//   X3: book title — grid — STATS/LIFETIME footer caption.
-//       Title→grid air matches hairline→title (equal-gap G). Footer sits lower to fill residual space.
+//   X3: book title — grid — STATS/LIFETIME footer caption (shared Ys via layoutX3StatsChrome).
 //   X4: same shell as Recents — section caption on top, grid below (no book title;
 //       last-read lives in the upper Now Reading panel). Unified vertical placement.
 void drawStatsStylePanel(const GfxRenderer& renderer, const ContentBand& band, const char* bookTitle,
@@ -1026,7 +1074,6 @@ void drawStatsStylePanel(const GfxRenderer& renderer, const ContentBand& band, c
   // Zone: mid rule → menu (minus page-dot strip when multi-page under-panel is on).
   const int zoneTop = band.pinBlocks ? band.lowerTop : (band.midY + kRuleThickness);
   const int zoneBottom = band.contentBottom - penumbraPageDotsStripH();
-  const int zoneH = std::max(1, zoneBottom - zoneTop);
 
   const int pageW = renderer.getScreenWidth();
   const int gridW = std::max(40, pageW - kStatsSideInset * 2);
@@ -1054,40 +1101,19 @@ void drawStatsStylePanel(const GfxRenderer& renderer, const ContentBand& band, c
     return;
   }
 
-  // Clock face: hairline→title air is G. Compact panels (X4 Pro) use a smaller gap
-  // so the footer never collides with the page-dot strip.
-  const int hairlineAir =
-      band.pinBlocks ? std::max(kStatsStackGap, band.lowerTop - band.midY - kRuleThickness) : kStatsStackGap;
-  const bool compact = isCompactClockFace(renderer);
-  const int titleGap = showBookTitle ? (compact ? kStatsStackGap : hairlineAir) : 0;
-  // Hard ceiling: caption bottom stays above the page-dot strip (zoneBottom).
-  const int maxFooterY = zoneBottom - captionH - (compact ? 6 : 2);
-
-  const int footerH = sectionCaption ? captionH : 0;
-  const int footerMinGap = compact ? kStatsStackGap : (hairlineAir + hairlineAir / 2);
-  const int blockH = titleH + titleGap + gridH + (footerH > 0 ? footerMinGap + footerH : 0);
-  int y = band.pinBlocks ? zoneTop : (zoneTop + std::max(0, (zoneH - blockH) / 2));
-  if (y < zoneTop + 2) y = zoneTop + 2;
-
+  // X3: shared chrome with Book Stats so Lifetime stays vertically in sync.
+  const X3StatsChrome chrome = layoutX3StatsChrome(renderer, band, showBookTitle, titleH);
+  int y = chrome.titleY;
   if (showBookTitle) {
     y = drawCenteredWrapped(renderer, kStatsBookTitleFontId, band.centerX, y, band.textMaxW, bookTitle,
                             kStatsTitleMaxLines, EpdFontFamily::BOLD);
-    y += titleGap;
+    (void)y;
   }
-
-  drawStatGrid(renderer, band.centerX, y, gridW, gridH, /*cols=*/3, /*rows=*/2, values, labels);
-  y += gridH;
-
+  // Lifetime is 2 rows; keep natural pair height (do not stretch into the 3-row
+  // reserve — empty air under the grid is what keeps the footer Y matched).
+  drawStatGrid(renderer, band.centerX, chrome.gridY, gridW, gridH, /*cols=*/3, /*rows=*/2, values, labels);
   if (sectionCaption) {
-    // Same placement as Lifetime: sit near the dots, but never below maxFooterY
-    // (old path pushed footer into the dots when the grid was tall).
-    int footerY = maxFooterY;
-    if (footerY < y + kStatsStackGap) {
-      footerY = std::min(maxFooterY, y + kStatsStackGap);
-    }
-    if (footerY > maxFooterY) footerY = maxFooterY;
-    if (footerY < zoneTop) footerY = zoneTop;
-    drawSectionLabel(renderer, band.centerX, footerY, sectionCaption);
+    drawSectionLabel(renderer, band.centerX, chrome.footerY, sectionCaption);
   }
 }
 
@@ -1177,80 +1203,53 @@ void drawBookStatsPanel(const GfxRenderer& renderer, const ContentBand& band, co
   snprintf(finishLabel, sizeof(finishLabel), "%s",
            s.isCompleted ? tr(STR_STATS_FINISHED_DATE) : tr(STR_STATS_EST_FINISH_DATE));
 
-  // Custom 3-row panel: 3+3+2 cells (dates are half-width). Compact panels (X4 Pro)
-// drop the book title (already shown on Title page) so Started / Finished always fit.
-  const int rowGap = isCompactClockFace(renderer) ? std::max(2, kStatRowGap / 2) : kStatRowGap;
-  const bool compact = isCompactClockFace(renderer);
-  const bool paintTitle = showBookTitle && !compact;
-  const int titleH = paintTitle ? measureWrappedHeight(renderer, kStatsBookTitleFontId, band.textMaxW, bookTitle,
-                                                       kStatsTitleMaxLines, EpdFontFamily::BOLD)
-                                : 0;
-  const int captionH = renderer.getLineHeight(kLabelFontId);
+  // Custom 3-row panel: 3+3+2 cells (dates are half-width), same chrome as StatsStyle.
+  const int rowGap = kStatRowGap;
+  const int titleH = showBookTitle ? measureWrappedHeight(renderer, kStatsBookTitleFontId, band.textMaxW, bookTitle,
+                                                          kStatsTitleMaxLines, EpdFontFamily::BOLD)
+                                   : 0;
   const int pairH = statPairHeight(renderer);
-  const int gridH = pairH * 3 + rowGap * 2;
+  const int twoRowH = pairH * 2 + rowGap;
+  const int thirdRowH = pairH;
+  const int gridH = twoRowH + rowGap + thirdRowH;
 
-  const int zoneTop = band.pinBlocks ? band.lowerTop : (band.midY + kRuleThickness);
-  const int zoneBottom = band.contentBottom - penumbraPageDotsStripH();
-  const int zoneH = std::max(1, zoneBottom - zoneTop);
   const int pageW = renderer.getScreenWidth();
   // Wider cells on compact so "Reading Time" is not truncated.
+  const bool compact = isCompactClockFace(renderer);
   const int sideInset = compact ? 4 : kStatsSideInset;
   const int gridW = std::max(40, pageW - sideInset * 2);
 
-  const int hairlineAir =
-      band.pinBlocks ? std::max(kStatsStackGap, band.lowerTop - band.midY - kRuleThickness) : kStatsStackGap;
-  const int titleGap = paintTitle ? (compact ? kStatsStackGap : hairlineAir) : 0;
-  // Reserve footer + full date row so dates are never dropped for air.
-  const int maxFooterY = zoneBottom - captionH - (compact ? 4 : 2);
-  const int footerMinGap = compact ? 4 : (hairlineAir + hairlineAir / 2);
-  const int footerH = captionH;
-  const int blockH = titleH + titleGap + gridH + footerMinGap + footerH;
-  int y = band.pinBlocks ? zoneTop : (zoneTop + std::max(0, (zoneH - blockH) / 2));
-  if (y < zoneTop + 2) y = zoneTop + 2;
-
-  if (paintTitle) {
+  // Same title / grid / footer Y as Lifetime (drawStatsStylePanel) so side-swipe stays synced.
+  const X3StatsChrome chrome = layoutX3StatsChrome(renderer, band, showBookTitle, titleH);
+  int y = chrome.titleY;
+  if (showBookTitle) {
     y = drawCenteredWrapped(renderer, kStatsBookTitleFontId, band.centerX, y, band.textMaxW, bookTitle,
                             kStatsTitleMaxLines, EpdFontFamily::BOLD);
-    y += titleGap;
+    (void)y;
   }
+
+  // Prefer natural 3-row height; if the shared chrome compressed gridAvailH, shrink
+  // row air rather than letting the date row collide with the STATS caption.
+  const int drawnGridH = std::min(gridH, chrome.gridAvailH);
+  const int drawnTwoRowH = (drawnGridH >= gridH) ? twoRowH : std::max(pairH, (drawnGridH * twoRowH) / gridH);
+  const int drawnThirdH = std::max(pairH / 2, drawnGridH - drawnTwoRowH - rowGap);
 
   // Row 0–1: 3 columns (BookStatsView card layout).
   const char* topValues[6] = {vSessions, vTime, vProgress, vAvg, vLeft, vPace};
   const char* topLabels[6] = {tr(STR_STATS_SESSIONS_LBL), tr(STR_STATS_TIME_LBL),        tr(STR_STATS_PROGRESS_LBL),
                               tr(STR_STATS_AVG_SESSION_LBL), tr(STR_TIME_LEFT),          tr(STR_STATS_PAGES_PER_MIN)};
-  // Always leave room for date row + STATS caption (do not skip dates on Pro).
-  const int roomForRest = pairH + footerMinGap + captionH + 2;
-  const int maxGridBottom = maxFooterY - roomForRest;
-  const int twoRowH = pairH * 2 + rowGap;
-  if (y + twoRowH > maxGridBottom && maxGridBottom > y + pairH) {
-    const int fitH = std::max(pairH * 2, maxGridBottom - y);
-    drawStatGrid(renderer, band.centerX, y, gridW, fitH, /*cols=*/3, /*rows=*/2, topValues, topLabels);
-    y += fitH + rowGap;
-  } else {
-    drawStatGrid(renderer, band.centerX, y, gridW, twoRowH, /*cols=*/3, /*rows=*/2, topValues, topLabels);
-    y += twoRowH + rowGap;
-  }
+  drawStatGrid(renderer, band.centerX, chrome.gridY, gridW, drawnTwoRowH, /*cols=*/3, /*rows=*/2, topValues,
+               topLabels);
+  y = chrome.gridY + drawnTwoRowH + ((drawnGridH >= gridH) ? rowGap : std::max(2, rowGap / 2));
 
-  // Row 2: half-width Started | Est. Finish / Finished — always paint when possible.
-  {
-    const int dateH = std::min(pairH, std::max(pairH / 2, maxFooterY - footerMinGap - captionH - y));
-    if (dateH >= pairH / 2) {
-      const int halfW = gridW / 2;
-      const int usedW = halfW * 2;
-      const int left = band.centerX - usedW / 2;
-      drawStatCell(renderer, left, halfW, y, dateH, vDays, startedLabel);
-      drawStatCell(renderer, left + halfW, halfW, y, dateH, vFinish, finishLabel);
-      y += dateH;
-    }
-  }
+  // Row 2: half-width Started | Est. Finish
+  const int halfW = gridW / 2;
+  const int usedW = halfW * 2;
+  const int left = band.centerX - usedW / 2;
+  drawStatCell(renderer, left, halfW, y, drawnThirdH, vDays, startedLabel);
+  drawStatCell(renderer, left + halfW, halfW, y, drawnThirdH, vFinish, finishLabel);
 
-  int footerY = maxFooterY;
-  if (footerY < y + 2) {
-    footerY = std::min(maxFooterY, y + 2);
-  }
-  if (footerY > maxFooterY) footerY = maxFooterY;
-  if (footerY < zoneTop) footerY = zoneTop;
-  drawSectionLabel(renderer, band.centerX, footerY, tr(STR_STATS));
+  drawSectionLabel(renderer, band.centerX, chrome.footerY, tr(STR_STATS));
 }
 
 // Lifetime — 3×2:

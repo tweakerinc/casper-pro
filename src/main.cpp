@@ -294,21 +294,68 @@ void waitForPowerRelease(const unsigned long maxMs = 0) {
 }
 
 constexpr char SLEEP_FRAME_FILE[] = "/.crosspoint/sleep_frame.bin";
+constexpr char SLEEP_FRAME_FP_FILE[] = "/.crosspoint/sleep_frame.fp";
+
+// Cheap fingerprint of the framebuffer so we skip rewriting 48 KB to SD when
+// the sleep image has not changed (every QR sleep used to rewrite + every wake
+// deleted the file, forcing a full rewrite next time).
+static uint32_t sleepFrameFingerprint(const uint8_t* fb, size_t n) {
+  uint32_t h = 2166136261u;
+  // Sample every 64th byte — enough to catch page/moon changes, ~750 XORs on X3.
+  for (size_t i = 0; i < n; i += 64) {
+    h ^= fb[i];
+    h *= 16777619u;
+  }
+  h ^= static_cast<uint32_t>(n);
+  return h;
+}
 
 static void saveSleepFrameBuffer() {
   Storage.ensureDirectoryExists("/.crosspoint");
+  const size_t bufferSize = renderer.getBufferSize();
+  const uint8_t* fb = renderer.getFrameBuffer();
+  if (!fb || bufferSize == 0) return;
+  const uint32_t fp = sleepFrameFingerprint(fb, bufferSize);
+
+  // Skip write when the on-disk frame matches (same moon-on-page / wallpaper).
+  {
+    HalFile fpFile;
+    if (Storage.openFileForRead("SLP", SLEEP_FRAME_FP_FILE, fpFile)) {
+      uint32_t oldFp = 0;
+      const int n = fpFile.read(reinterpret_cast<uint8_t*>(&oldFp), sizeof(oldFp));
+      fpFile.close();
+      if (n == static_cast<int>(sizeof(oldFp)) && oldFp == fp && Storage.exists(SLEEP_FRAME_FILE)) {
+        HalFile chk;
+        if (Storage.openFileForRead("SLP", SLEEP_FRAME_FILE, chk)) {
+          const size_t sz = chk.size();
+          chk.close();
+          if (sz == bufferSize) {
+            LOG_DBG("MAIN", "sleep_frame unchanged — skip %u byte rewrite", static_cast<unsigned>(bufferSize));
+            return;
+          }
+        }
+      }
+    }
+  }
+
   HalFile file;
   if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_FILE, file)) {
     LOG_ERR("MAIN", "sleep_frame save: open failed");
     return;
   }
-  const size_t bufferSize = renderer.getBufferSize();
-  const size_t written = file.write(renderer.getFrameBuffer(), bufferSize);
+  const size_t written = file.write(fb, bufferSize);
   file.close();
   if (written != bufferSize) {
     LOG_ERR("MAIN", "sleep_frame save: wrote %u/%u", static_cast<unsigned>(written), static_cast<unsigned>(bufferSize));
     Storage.remove(SLEEP_FRAME_FILE);
     return;
+  }
+  {
+    HalFile fpFile;
+    if (Storage.openFileForWrite("SLP", SLEEP_FRAME_FP_FILE, fpFile)) {
+      fpFile.write(reinterpret_cast<const uint8_t*>(&fp), sizeof(fp));
+      fpFile.close();
+    }
   }
   LOG_DBG("MAIN", "sleep_frame saved %u bytes", static_cast<unsigned>(bufferSize));
 }
@@ -324,12 +371,11 @@ static bool loadSleepFrameBuffer() {
     LOG_ERR("MAIN", "sleep_frame load: read %u/%u", static_cast<unsigned>(bytesRead),
             static_cast<unsigned>(bufferSize));
     Storage.remove(path);
+    Storage.remove(SLEEP_FRAME_FP_FILE);
     return false;
   }
-  Storage.remove(path);
-  if (path != SLEEP_FRAME_FILE && Storage.exists(SLEEP_FRAME_FILE)) {
-    Storage.remove(SLEEP_FRAME_FILE);
-  }
+  // Keep the file on SD — next sleep can skip the 48 KB rewrite when unchanged.
+  // (Old code deleted it every wake, guaranteeing a full rewrite on every sleep.)
   return true;
 }
 
@@ -362,23 +408,17 @@ void enterDeepSleep(bool fromTimeout, bool powerQuickResume) {
     APP_STATE.readerActivityLoadCount = 0;
   }
 
-  // Instant feedback: moon on the retained page *before* heavy SD / teardown so
-  // the user sees the device reacted the moment they pressed power.
+  // Instant feedback: moon on glass so the power press registers before the
+  // multi-second sleep teardown. Windowed on X4; X3 partial path is full FAST
+  // (~430ms) — still worth it vs silent moon-only-in-FB.
   if (isQuickResumeSleep) {
-    // System-wide: keep invertOnDisplay so light paint-space FB stays dark on glass.
-    // Reader-only: FB is light; temporary invert so the moon lands on a dark page
-    // without permanently flipping bits (home must stay light paint-space).
     const bool sysWideDark = SETTINGS.readerDarkMode != 0 && SETTINGS.darkModeReaderOnly == 0;
-    const bool readerOnlyDark = SETTINGS.readerDarkMode != 0 && SETTINGS.darkModeReaderOnly != 0;
     renderer.setInvertOnDisplay(sysWideDark);
     SleepChromeIcon::drawAtTopChrome(renderer, MoonIcon, MOONICON_WIDTH, MOONICON_HEIGHT);
-    if (readerOnlyDark && APP_STATE.lastSleepFromReader) {
-      renderer.invertScreen();
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-      renderer.invertScreen();
-    } else {
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-    }
+    const int moonX = SleepChromeIcon::leftX(renderer);
+    const int moonY = SleepChromeIcon::topY(renderer);
+    const int moonSize = SleepChromeIcon::iconSize(renderer);
+    UiGhostPolicy::displayPartialOrSoft(renderer, moonX, moonY, moonSize, moonSize);
   }
 
   // Skip BootActivity splash on power-button wake for both QR and wallpaper sleep.
@@ -717,23 +757,29 @@ void setup() {
         if (QrTimingLog::active()) QrTimingLog::line("after loadSleepFrameBuffer");
         // Re-seed controller "previous" plane from the restored FB (X3 DTM1 / X4 RED).
         renderer.cleanupGrayscaleWithFrameBuffer();
-        // QR→book: keep moon/page on glass — do NOT FAST the panel before first
-        // ink (was a full ~0.5–1s X3 wait on every wake vs 0.1.5). First page
-        // paint replaces the frame. Non-book wakes still show moon→dots feedback.
-        if (!qrOpenBook) {
+        // Moon → dots on EVERY wake, including QR→book (YACP behaviour). Book
+        // wakes used to skip this to save the refresh before first ink, but that
+        // left the moon frozen on glass for ~3s with no sign the press registered.
+        // On X3 a windowed update costs about the same as a full FAST (~430ms,
+        // waveform-bound not area-bound), so the swap is cheap relative to the
+        // confidence it gives: something happened the moment you pressed power.
+        {
           const bool readerOnlyDarkWake =
               SETTINGS.readerDarkMode != 0 && SETTINGS.darkModeReaderOnly != 0;
           SleepChromeIcon::replaceAtTopChrome(renderer, LoadingIcon, LOADINGICON_WIDTH, LOADINGICON_HEIGHT);
+          const int dotsX = SleepChromeIcon::leftX(renderer);
+          const int dotsY = SleepChromeIcon::topY(renderer);
+          const int dotsSize = SleepChromeIcon::iconSize(renderer);
           if (readerOnlyDarkWake) {
             renderer.invertScreen();
-            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            UiGhostPolicy::displayPartialOrSoft(renderer, dotsX, dotsY, dotsSize, dotsSize);
             renderer.invertScreen();
           } else {
-            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            UiGhostPolicy::displayPartialOrSoft(renderer, dotsX, dotsY, dotsSize, dotsSize);
           }
-          if (QrTimingLog::active()) QrTimingLog::line("after moon→dots (non-book QR)");
-        } else if (QrTimingLog::active()) {
-          QrTimingLog::line("QR→book: skip pre-ink panel FAST (glass kept)");
+          if (QrTimingLog::active()) {
+            QrTimingLog::line("after moon→dots (openBook=%d)", qrOpenBook ? 1 : 0);
+          }
         }
       } else {
         // Never show BootActivity here — glass already holds wallpaper/moon through
@@ -948,20 +994,44 @@ void loop() {
     lastMemPrint = millis();
   }
 
-  // Handle incoming serial commands,
-  // nb: we use logSerial from logging to avoid deprecation warnings
-  if (logSerial.available() > 0) {
-    String line = logSerial.readStringUntil('\n');
-    if (line.startsWith("CMD:")) {
-      String cmd = line.substring(4);
-      cmd.trim();
-      if (cmd == "SCREENSHOT") {
-        const uint32_t bufferSize = display.getBufferSize();
-        logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
-        uint8_t* buf = display.getFrameBuffer();
-        logSerial.write(buf, bufferSize);
-        logSerial.printf("SCREENSHOT_END\n");
+  // Handle incoming serial commands.
+  //
+  // This used to be `logSerial.readStringUntil('\n')`, which blocks for the
+  // Stream timeout (~1s) whenever bytes are available but no newline has
+  // arrived yet — a terminal that echoes, a partial paste, or line noise on the
+  // USB CDC stalled gpio.update() and every button for a full second. Drain
+  // non-blocking into a fixed buffer instead and act only on a complete line.
+  // Static buffer, not String: no heap churn on the main loop.
+  {
+    static char cmdBuf[64];
+    static uint8_t cmdLen = 0;
+    while (logSerial.available() > 0) {
+      const int c = logSerial.read();
+      if (c < 0) break;
+      if (c == '\n' || c == '\r') {
+        if (cmdLen > 0) {
+          cmdBuf[cmdLen] = '\0';
+          if (strncmp(cmdBuf, "CMD:", 4) == 0) {
+            const char* cmd = cmdBuf + 4;
+            while (*cmd == ' ' || *cmd == '\t') ++cmd;
+            if (strcmp(cmd, "SCREENSHOT") == 0) {
+              const uint32_t bufferSize = display.getBufferSize();
+              logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
+              uint8_t* buf = display.getFrameBuffer();
+              logSerial.write(buf, bufferSize);
+              logSerial.printf("SCREENSHOT_END\n");
+            }
+          }
+          cmdLen = 0;
+        }
+        continue;
       }
+      // Overlong line (noise): drop it rather than wrapping into a false match.
+      if (cmdLen >= sizeof(cmdBuf) - 1) {
+        cmdLen = 0;
+        continue;
+      }
+      cmdBuf[cmdLen++] = static_cast<char>(c);
     }
   }
 

@@ -307,7 +307,8 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
                          const std::function<UIIcon(int index)>& rowIcon,
                          const std::function<std::string(int index)>& rowValue, bool highlightValue,
                          const std::function<bool(int index)>& rowDimmed,
-                         const std::function<bool(int index)>& rowApplied) const {
+                         const std::function<bool(int index)>& rowApplied,
+                         const std::function<bool(int index)>& rowCentered) const {
   // Icons no longer drawn — free horizontal space for long book titles.
   (void)rowIcon;
 
@@ -353,7 +354,8 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 
     int valueWidth = 0;
     std::string valueText;
-    if (rowValue != nullptr) {
+    const bool centered = rowCentered && rowCentered(i);
+    if (!centered && rowValue != nullptr) {
       valueText = rowValue(i);
       if (!valueText.empty()) {
         valueText = renderer.truncatedText(titleFont, valueText.c_str(), maxListValueWidth);
@@ -381,7 +383,7 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 
     std::string subtitleDrawn;
     int subtitleLineH = 0;
-    if (rowSubtitle != nullptr) {
+    if (!centered && rowSubtitle != nullptr) {
       const std::string subtitleRaw = rowSubtitle(i);
       if (!subtitleRaw.empty()) {
         subtitleDrawn = renderer.truncatedText(SMALL_FONT_ID, subtitleRaw.c_str(), rowTextWidth);
@@ -389,23 +391,32 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       }
     }
 
-    const int rowHeight = lyraListRowHeightForLines(renderer, !subtitleDrawn.empty() || hasSubtitleCb, nTitleLines);
+    const int rowHeight = centered ? renderer.getLineHeight(UI_12_FONT_ID) * 3
+                                   : lyraListRowHeightForLines(renderer, !subtitleDrawn.empty() || hasSubtitleCb, nTitleLines);
     // Stop if this taller row would leave the list area (keep at least one row).
     if (i > pageStartIndex && itemY + rowHeight > rect.y + rect.height) {
       break;
     }
 
     const int blockH = titleBlockH + (subtitleDrawn.empty() ? 0 : (kLyraTitleSubtitleGap + subtitleLineH));
-    const int textDrawY = itemY + std::max(0, (rowHeight - blockH) / 2);
+    const int textDrawY = itemY + (centered ? 0 : std::max(0, (rowHeight - blockH) / 2));
     const int subtitleDrawY = textDrawY + titleBlockH + kLyraTitleSubtitleGap;
 
-    const auto focusStyle = isSelected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-    for (size_t li = 0; li < titleLines.size(); ++li) {
-      const int ly = textDrawY + static_cast<int>(li) * lineStep;
-      renderer.drawText(titleFont, textX, ly, titleLines[li].c_str(), /*black=*/true, focusStyle);
+    const auto focusStyle = (isSelected && !centered) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+    if (centered) {
+      const int headerFont = UI_12_FONT_ID;
+      for (size_t li = 0; li < titleLines.size(); ++li) {
+        const int ly = textDrawY + static_cast<int>(li) * lineStep;
+        renderer.drawCenteredText(headerFont, ly, titleLines[li].c_str(), /*black=*/true, EpdFontFamily::BOLD);
+      }
+    } else {
+      for (size_t li = 0; li < titleLines.size(); ++li) {
+        const int ly = textDrawY + static_cast<int>(li) * lineStep;
+        renderer.drawText(titleFont, textX, ly, titleLines[li].c_str(), /*black=*/true, focusStyle);
+      }
     }
 
-    if (rowDimmed && rowDimmed(i) && !isSelected) {
+    if (rowDimmed && rowDimmed(i) && !isSelected && !centered) {
       const int dimH = renderer.getLineHeight(titleFont);
       for (size_t li = 0; li < titleLines.size(); ++li) {
         const int ly = textDrawY + static_cast<int>(li) * lineStep;

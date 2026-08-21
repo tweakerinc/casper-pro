@@ -62,9 +62,11 @@ constexpr unsigned long BOOKMARK_MESSAGE_DURATION_MS = 2500;
 // Was 400ms; shave it so single-tap menu still feels snappy without killing double-tap.
 constexpr unsigned long DOUBLE_PRESS_MENU_MS = 220;
 
-// Extra air under top chrome (battery/clock) and matching reserve above bottom
-// chrome so page text never sits under the status bar or dictionary button strip.
-// Bumps slightly when Manage Reader UI → Font Size is larger than 8 pt.
+// Extra air under top chrome (battery/clock) so page text never sits under it.
+// NOTE: reader viewport geometry now lives in ReaderRenderKey::compute, which
+// derives clearance from the body line height (half paragraph) and takes the
+// max of the status band and the drawn hint strip. These remain for non-Rivulet
+// readers (Txt/Xtc) that still use fixed chrome padding.
 inline int readerTopChromeExtra() {
   switch (SETTINGS.statusBarFontSize) {
     case CasperSettings::STATUS_BAR_FONT_10:
@@ -76,8 +78,8 @@ inline int readerTopChromeExtra() {
   }
 }
 inline int readerBottomChromeExtra() { return readerTopChromeExtra(); }
-constexpr int kReaderTopChromeExtra = 24;     // legacy default; prefer readerTopChromeExtra()
-constexpr int kReaderBottomChromeExtra = 24;  // mirror top air
+constexpr int kReaderTopChromeExtra = 24;
+constexpr int kReaderBottomChromeExtra = 24;
 constexpr int kReaderBottomChromePad = 4;
 
 enum ReaderTouchAction : freeink::ui::ActionId {
@@ -111,7 +113,8 @@ struct PageTurnResult {
 };
 
 inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
-  const bool usePress = SETTINGS.longPressButtonBehavior == SETTINGS.OFF;
+  const bool usePress =
+      SETTINGS.longPressSideA == SETTINGS.LP_MENU_DISABLED && SETTINGS.longPressSideB == SETTINGS.LP_MENU_DISABLED;
   const bool tiltNext = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedForward();
   const bool tiltPrev = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedBack();
   // PageBack/PageForward already include Up/Down/Left/Right + Side Layout + Orient Front Buttons.
@@ -346,16 +349,36 @@ inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntil
   if (tempInvert) renderer.invertScreen();
 }
 
-// Grayscale anti-aliasing pass. Renders content twice (LSB + MSB) to build
-// the grayscale buffer. Only the content callback is re-rendered — status bars
-// and other overlays should be drawn before calling this.
-// Kept as a template to avoid std::function overhead; instantiated once per reader type.
+// Push the BW page already painted into the framebuffer, then enhance it with
+// the 2-bit greyscale multipass.
+//
+// On X3, displayGray() is the OEM 4-level *nudge* bank. It does not replace
+// the panel contents — it expects the new BW frame to already be on glass
+// (and the controller RAM to be in the state displayGrayscaleBase leaves).
+// Without that base step, the nudge runs against the *previous* page and the
+// turn looks like nothing happened until a HALF scrub. That is exactly the
+// "I have to hold power to load the next page" report, and the PAGE lines that
+// said ran=1 refresh=408ms while the panel still showed the prior page.
+//
+// Penumbra's clock AA has always done base → greys → cleanup. This helper did
+// not, and every AA-on reader path (Rivulet, Txt) went through it.
+//
+// Returns false when the pass could not run (storeBwBuffer needs ~48 KB in 8 KB
+// chunks and fails under heap pressure). On false NOTHING has been pushed to the
+// panel and the BW framebuffer is left untouched, so the caller MUST fall back to
+// an ordinary refresh — otherwise the page the caller already painted never
+// reaches the glass and the turn looks like it did nothing.
 template <typename RenderFn>
-void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
+[[nodiscard]] bool renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn,
+                                       const HalDisplay::RefreshMode baseMode = HalDisplay::FAST_REFRESH) {
   if (!renderer.storeBwBuffer()) {
-    LOG_ERR("READER", "Failed to store BW buffer for anti-aliasing");
-    return;
+    LOG_ERR("READER", "Failed to store BW buffer for anti-aliasing; falling back to BW refresh");
+    return false;
   }
+
+  // Page appears here. OEM AA-pre-BW mid settle leaves particles receptive to
+  // the gray nudge that follows.
+  renderer.displayGrayscaleBase(baseMode);
 
   renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
@@ -371,6 +394,10 @@ void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
   renderer.setRenderMode(GfxRenderer::BW);
 
   renderer.restoreBwBuffer();
+  // Rebase DTM planes from the restored BW frame and clear _inGrayscaleMode so
+  // the next turn's differential BW/AA path is not fighting leftover gray RAM.
+  renderer.cleanupGrayscaleWithFrameBuffer();
+  return true;
 }
 
 struct BackNavCallback {

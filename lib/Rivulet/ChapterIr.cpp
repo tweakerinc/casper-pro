@@ -100,7 +100,15 @@ void ChapterIr::reserveForConvert(const size_t htmlLen) {
 
   size_t textGuess = htmlLen > 0 ? (htmlLen * 3 / 5) + 1024 : 4096;
   if (textGuess > kMaxTextBlob) textGuess = kMaxTextBlob;
-  // Cap text pre-size to ~half of max contiguous so vectors still fit.
+  // Cap text pre-size to ~half of max contiguous so the runs/blocks vectors still
+  // fit afterwards.
+  //
+  // Taking the full guess here was tried and measured worse: the same chapter went
+  // from `partial=0 text=23006 blocks=158` to `partial=1 text=19826 blocks=120`.
+  // Grabbing the whole estimate up front leaves too little contiguous heap for the
+  // vector growth that follows, so the convert OOMs later instead of earlier. (That
+  // attempt was chasing a misdiagnosis anyway — the real fault was PageLayouter
+  // reporting failure for measure-only pages, fixed separately.)
   const size_t textCap = std::min(textGuess, maxA / 2);
   if (textCap >= 2048 && (!textData_ || textCap_ < textCap)) {
     char* p = static_cast<char*>(std::realloc(textData_, textCap));
@@ -409,18 +417,94 @@ int ChapterIr::estimatePageCount(const int viewportW, const int viewportH, const
                                  const float lineCompression) const {
   if (viewportW < 16 || viewportH < 16 || bodyEmPx < 4) return 1;
   if (textLen_ == 0 && blocks_.empty()) return 1;
+
+  // Heuristic that knows about Rivulet block kinds — not a classic section rebuild,
+  // but far closer than "chars / fixed CPL" for chapters with images, HRs, and
+  // large headings (the old estimate undercounted plate-heavy spines badly).
   const float lc = lineCompression > 0.1f ? lineCompression : 1.0f;
-  const int lineHpx = std::max(bodyEmPx + 2, static_cast<int>(bodyEmPx * 1.2f * lc + 0.5f));
-  const int linesPerPage = std::max(1, viewportH / lineHpx);
-  const int charsPerLine = std::max(12, (viewportW * 10) / std::max(1, bodyEmPx * 5));
-  const size_t chars = textLen_;
-  const int paraBreaks = static_cast<int>(blocks_.size());
-  const int contentLines =
-      static_cast<int>((chars + static_cast<size_t>(charsPerLine) - 1) / static_cast<size_t>(charsPerLine)) +
-      paraBreaks / 2;
-  const int pages = std::max(1, (contentLines + linesPerPage - 1) / linesPerPage);
-  if (pages == 1 && (chars > 400 || blocks_.size() > 3)) {
-    return 2;
+  const int bodyLine = std::max(bodyEmPx + 2, static_cast<int>(bodyEmPx * 1.2f * lc + 0.5f));
+  const int linesPerPage = std::max(1, viewportH / bodyLine);
+  // Typical Latin serif advance is ~0.5–0.55em; the old 0.5em (2*W/em) CPL was still
+  // too optimistic on e-ink margins and produced first-load ETAs like "7 pages" for
+  // a 40-page DCC chapter. Use ~0.62em and floor CPL so we over-estimate slightly
+  // (status "~" is better high than low until the idle map catches up).
+  const int charsPerLine = std::max(28, (viewportW * 100) / std::max(1, bodyEmPx * 62));
+
+  int contentLines = 0;
+  int paraCount = 0;
+  for (const Block& b : blocks_) {
+    switch (b.kind) {
+      case BlockKind::HorizontalRule:
+        contentLines += 1;
+        break;
+      case BlockKind::Spacer: {
+        // marginBottomEmQ4 is in 1/16 em.
+        const int gap = std::max(1, (static_cast<int>(b.marginBottomEmQ4) * bodyEmPx) / 16);
+        contentLines += std::max(1, (gap + bodyLine - 1) / bodyLine);
+        break;
+      }
+      case BlockKind::Image: {
+        int h = b.imageH > 0 ? static_cast<int>(b.imageH) : bodyEmPx * 4;
+        // Floats share vertical space with wrapping text — charge ~half height.
+        if ((b.flags & (kBlockFloatLeft | kBlockFloatRight)) != 0) {
+          h = std::max(bodyLine, h / 2);
+        }
+        // Cap a single plate at one page so a cover-like image cannot explode ETA.
+        const int imgLines = std::min(linesPerPage, std::max(1, (h + bodyLine - 1) / bodyLine));
+        contentLines += imgLines;
+        break;
+      }
+      default: {
+        // Paragraph / heading: count UTF-8 bytes in the block's runs.
+        size_t bytes = 0;
+        const uint16_t runEnd = static_cast<uint16_t>(b.runBegin + b.runCount);
+        for (uint16_t ri = b.runBegin; ri < runEnd && ri < runs_.size(); ++ri) {
+          bytes += runs_[ri].textLen;
+        }
+        int stepBoost = 0;
+        if (b.kind == BlockKind::Heading1) stepBoost = bodyLine;  // ~extra line of air
+        else if (b.kind == BlockKind::Heading2)
+          stepBoost = bodyLine / 2;
+        else if (b.kind >= BlockKind::Heading3 && b.kind <= BlockKind::Heading6)
+          stepBoost = bodyLine / 4;
+        // Larger faces use fewer chars per line.
+        int cpl = charsPerLine;
+        if (b.kind == BlockKind::Heading1)
+          cpl = std::max(8, charsPerLine * 2 / 3);
+        else if (b.kind == BlockKind::Heading2)
+          cpl = std::max(10, charsPerLine * 4 / 5);
+        const int textLines =
+            bytes == 0 ? 1
+                       : static_cast<int>((bytes + static_cast<size_t>(cpl) - 1) / static_cast<size_t>(cpl));
+        contentLines += textLines + (stepBoost + bodyLine - 1) / bodyLine;
+        if (b.kind == BlockKind::Paragraph) ++paraCount;
+        break;
+      }
+    }
+  }
+  contentLines += paraCount / 2;
+
+  // Empty-run chapters (image-only): still at least the image lines above.
+  if (contentLines <= 0) {
+    contentLines = static_cast<int>((textLen_ + static_cast<size_t>(charsPerLine) - 1) /
+                                    static_cast<size_t>(charsPerLine)) +
+                   static_cast<int>(blocks_.size()) / 2;
+  }
+
+  int pages = std::max(1, (contentLines + linesPerPage - 1) / linesPerPage);
+  // Floor from raw text length so a sparse block list cannot under-count a prose chapter.
+  if (textLen_ > 0 && charsPerLine > 0 && linesPerPage > 0) {
+    const int charsPerPage = charsPerLine * linesPerPage;
+    const int fromText =
+        static_cast<int>((textLen_ + static_cast<size_t>(charsPerPage) - 1) / static_cast<size_t>(charsPerPage));
+    pages = std::max(pages, fromText);
+  }
+  if (pages == 1 && (textLen_ > 400 || blocks_.size() > 3)) {
+    pages = 2;
+  }
+  // Slight padding while the map is still cold — UI shows "~N"; idle map replaces it.
+  if (pages >= 4) {
+    pages = pages + std::max(1, pages / 12);
   }
   return pages;
 }

@@ -646,6 +646,12 @@ void HomeActivity::onResume() {
     homeUiReady = true;
   }
 
+  // Capture the snappy-return hint BEFORE clearing it. This flag was written in
+  // five places and never read — so every return to Home armed a hard scrub and
+  // paid a full HALF (~3.2s on X3), even coming back from a light chrome child
+  // like the book action sheet (device log: 2.2s stall + 3184ms HALF + 1108ms
+  // clock ≈ 6.5s back to Home).
+  const bool snappyReturnFromUiChild = leaveForUiChildSnappy;
   leaveForUiChildSnappy = false;
 
   freeCoverBufferRamOnly();
@@ -677,7 +683,18 @@ void HomeActivity::onResume() {
   minimalSuppressInitialFrontRelease = usesMinimalHomeInteraction();
   penumbraHalfBaselineDone = false;
   forceHomeShellRepaint = true;  // never settle-skip over reader residual
-  UiGhostPolicy::requestHardScrub();
+  // Reader → Home genuinely needs the HALF: a dense book page ghosts badly and a
+  // FAST pass settles that residual into the panel. A light UI child (book action
+  // sheet, settings, menus) leaves almost nothing to scrub, so it gets a FAST
+  // paint and keeps the deferred clock AA.
+  if (snappyReturnFromUiChild) {
+    UiGhostPolicy::clearHardScrub();
+    deferScrubAfterFirstPaint_ = false;
+    SystemLog::logTiming("HOME", "resume snappy (light UI child) — FAST paint");
+  } else {
+    UiGhostPolicy::requestHardScrub();
+    deferScrubAfterFirstPaint_ = true;
+  }
   suppressMenuBackUntilMs = millis() + 900UL;
   // Cover themes: multipass greys on the *first* home paint when thumbs exist
   // (one HALF greys-base). Deferred "shell HALF → wait → greys HALF" felt like
@@ -716,12 +733,18 @@ void HomeActivity::onResume() {
     globalStats = GlobalReadingStats{};
   }
 
+  // Penumbra paints no cover art, so probing hero thumbs is pure dead work — it
+  // constructs an Epub per recent book (SD open + parse each) on the return-to-home
+  // path, which is a large part of the 2s of "nothing happens" before the paint.
   const int heroH = homeHeroThumbHeight(renderer, metrics.homeCoverHeight);
-  if (bindExistingHeroThumbsIfReady(recentBooks, heroH, isDashboardRecentsTheme(),
-                                    HomeCoverMetrics::homeShelfThumbHeight)) {
+  if (isPenumbraTheme()) {
+    recentsLoaded = true;
+    LOG_DBG("HOME", "onResume: penumbra text home — no thumb probe");
+  } else if (bindExistingHeroThumbsIfReady(recentBooks, heroH, isDashboardRecentsTheme(),
+                                           HomeCoverMetrics::homeShelfThumbHeight)) {
     recentsLoaded = true;
     LOG_DBG("HOME", "onResume: thumbs ready — HALF shell then multipass");
-  } else if (isPenumbraTheme() || !usesHomeCoverMultipass()) {
+  } else if (!usesHomeCoverMultipass()) {
     recentsLoaded = true;
     // First paint honors hardScrubArmed → HALF (baseline set after that paint).
     LOG_DBG("HOME", "onResume: text home — HALF scrub on first paint");
@@ -1059,6 +1082,14 @@ void HomeActivity::cancelHomeBackgroundPaint() {
   // Drop deferred greys / deferred HALF so we do not flash after leaving Home.
   coverGrayNeedsRetry = false;
   deferredGreysOnly = false;
+  // A pending HALF means the panel is still holding a FAST-only paint over
+  // whatever was there before (a dense book page, typically). Cancelling it
+  // without re-arming left that residual on glass — the "huge amount of ghosting
+  // when exiting to menu". Hand the scrub back to whoever paints next.
+  if (deferredHalfScrubOnly) {
+    UiGhostPolicy::requestHardScrub();
+    penumbraHalfBaselineDone = false;
+  }
   deferredHalfScrubOnly = false;
   softGrayscaleBase = false;
   // Abort multipass between stages (checked in multipassHomeCoverGrayscale).
@@ -1092,6 +1123,65 @@ bool HomeActivity::handleForcedRefresh() {
     UiGhostPolicy::displayHardScrub(renderer);
   }
   return true;
+}
+
+// Index the most recently read book's page maps while Home is untouched.
+//
+// DISABLED (kBookIndexerEnabled = false). Kept, not deleted, because the pieces
+// that work are worth keeping and the remaining blocker is already scheduled
+// work.
+//
+// What was fixed and does work: the page-map walk is properly sliced, a device
+// capture shows `HIDX | spine=9 pages=12 ms=6779 bursts=3` — twelve pages
+// measured across three short bursts with input sampled between them. The maps
+// it writes are also valid now that the render key is shared with the reader.
+//
+// What still does not: loading the chapter is one indivisible step and it costs
+// 5-15 seconds, which is most of the total. From the same capture:
+//
+//   HIDX | spine=13 loaded cache=0 ms=12950
+//   LOOP | activity_slow 13936ms
+//   HIDX | spine=14 loaded cache=0 ms=14712
+//   LOOP | activity_slow 15710ms
+//
+// Home stops sampling input for that whole window, which reads as a freeze, and
+// free heap decays across passes (106K -> 59K) until the indexer starves below
+// its own floor and abandons chapters half-done. Slicing the load needs
+// HtmlToIr to convert incrementally, which is the streaming-converter work still
+// outstanding. Until then this costs the user a frozen home screen and buys
+// nothing they can perceive, so it stays off.
+void HomeActivity::tickBookIndexer() {
+  if constexpr (!kBookIndexerEnabled) return;
+  if (!homeUiReady || recentsLoading || minimalMenuOpen) return;
+  if (deferredHalfScrubOnly || deferredGreysOnly || coverGrayNeedsRetry || coverNeedsRetry) return;
+  if (activityManager.hasPendingActivityChange() || cancelBackgroundPaint) return;
+  if (recentBooks.empty()) return;
+
+  // Any control held → not idle. Reset the timer so a scroll never gets
+  // interrupted by a multi-second chapter convert starting underneath it.
+  if (isAnyFrontButtonPressed(mappedInput) || mappedInput.isPressed(MappedInputManager::Button::Back) ||
+      mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+      mappedInput.isPressed(MappedInputManager::Button::Left) ||
+      mappedInput.isPressed(MappedInputManager::Button::Right) ||
+      mappedInput.isPressed(MappedInputManager::Button::Up) ||
+      mappedInput.isPressed(MappedInputManager::Button::Down)) {
+    indexerIdleSinceMs_ = millis();
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (indexerIdleSinceMs_ == 0) {
+    indexerIdleSinceMs_ = now;
+    return;
+  }
+  if (now - indexerIdleSinceMs_ < kIndexIdleMs) return;
+  if (lastIndexStepMs_ != 0 && (now - lastIndexStepMs_) < kIndexGapMs) return;
+
+  // Last-read book: the one most likely to be continued.
+  bookIndexer_.begin(recentBooks[0].path);
+  lastIndexStepMs_ = millis();
+  (void)bookIndexer_.step(renderer);
+  lastIndexStepMs_ = millis();
 }
 
 void HomeActivity::loop() {
@@ -1199,6 +1289,10 @@ void HomeActivity::loop() {
       }
     }
   }
+
+  // Idle background work. Runs before input handling so a step that decides to
+  // act still leaves this frame's edges to be sampled next loop.
+  tickBookIndexer();
 
   // All minimal homes: Menu · Library · Recents · Read.
   if (usesMinimalHomeInteraction()) {
@@ -1967,14 +2061,15 @@ void HomeActivity::render(RenderLock&& lock) {
     snappyResumeNoGreys = false;
     deferredHalfScrubOnly = false;
     const uint32_t tPenumbra = millis();
-    // Back→Home arms hard scrub in onResume → full-panel HALF clears reader residual.
-    // Do NOT use greyscale clock multipass as the sole open path on X4 Pro: that only
-    // greys the clock band and leaves heavy ghosting from the book page.
-    // X3 may still polish the 72pt clock with AA after a clean HALF.
+    // Back→Home arms hard scrub in onResume. X4 Pro SSD1677 HALF is a soft GC
+    // vs dense reader BW — leave-book residual needs a true full waveform once.
+    // X3 keeps HALF + deferred clock AA (the 72pt greys pass was the 4s stall).
     const bool hard = UiGhostPolicy::hardScrubArmed();
-    // X4 Pro SSD1677 HALF is a soft GC vs dense reader BW — leave-book residual
-    // (screenshot: full page under clock) needs a true full waveform once.
     const bool proFullScrub = hard && !gpio.deviceIsX3();
+    const bool deferClockAa = hard && deferScrubAfterFirstPaint_ && gpio.deviceIsX3();
+    deferScrubAfterFirstPaint_ = false;
+    const int baseMode =
+        hard ? static_cast<int>(HalDisplay::HALF_REFRESH) : static_cast<int>(HalDisplay::FAST_REFRESH);
     SystemLog::logTiming("HOME", "penumbra_full pre_disp mode=%s theme=%u fre=%u",
                          proFullScrub ? "FULL" : (hard ? "HALF" : "FAST"),
                          static_cast<unsigned>(SETTINGS.uiTheme), static_cast<unsigned>(ESP.getFreeHeap()));
@@ -1994,17 +2089,15 @@ void HomeActivity::render(RenderLock&& lock) {
         UiGhostPolicy::displayHalf(renderer);
       }
       penumbraHalfBaselineDone = true;
-      // Optional X3-only AA polish on the clock digits (soft bank). Pro: scrub is enough.
-      if (!leave && PenumbraThemeUi::usesClockFace() && gpio.deviceIsX3()) {
+      if (!leave && PenumbraThemeUi::usesClockFace() && gpio.deviceIsX3() && !deferClockAa) {
         (void)PenumbraThemeUi::displayClockAntiAliased(renderer, static_cast<int>(HalDisplay::FAST_REFRESH),
                                                        /*dirtyOverride=*/nullptr);
       }
       SystemLog::logTimed("HOME", millis() - tPenumbra, "penumbra_full mode=%s theme=%u fre=%u",
-                          proFullScrub ? "FULL" : "HALF", static_cast<unsigned>(SETTINGS.uiTheme),
-                          static_cast<unsigned>(ESP.getFreeHeap()));
-    } else if (!leave && PenumbraThemeUi::usesClockFace() && gpio.deviceIsX3() &&
-               PenumbraThemeUi::displayClockAntiAliased(renderer, static_cast<int>(HalDisplay::FAST_REFRESH),
-                                                       /*dirtyOverride=*/nullptr)) {
+                          proFullScrub ? "FULL" : (deferClockAa ? "HALF+deferAA" : "HALF"),
+                          static_cast<unsigned>(SETTINGS.uiTheme), static_cast<unsigned>(ESP.getFreeHeap()));
+    } else if (!leave && gpio.deviceIsX3() &&
+               PenumbraThemeUi::displayClockAntiAliased(renderer, baseMode, /*dirtyOverride=*/nullptr)) {
       penumbraHalfBaselineDone = true;
       SystemLog::logTimed("HOME", millis() - tPenumbra, "penumbra_full mode=FAST+clockAA theme=%u fre=%u",
                           static_cast<unsigned>(SETTINGS.uiTheme), static_cast<unsigned>(ESP.getFreeHeap()));
@@ -2019,8 +2112,18 @@ void HomeActivity::render(RenderLock&& lock) {
     paintedUiTheme = clockTheme;
     recentsLoaded = true;
     homeUiReady = true;
-    PenumbraThemeUi::formatHeroTimeNow(penumbraLastDrawnTime, sizeof(penumbraLastDrawnTime));
-    forcePenumbraClockRepaint = false;
+    if (deferClockAa) {
+      // Hand the clock's greyscale pass to the windowed clock path on the next
+      // tick. Clearing the remembered time makes redrawClockBlock treat the whole
+      // band as dirty, so it re-renders anti-aliased over a Home that is already
+      // on glass — the same pixels, without the multi-second wait for first ink.
+      penumbraLastDrawnTime[0] = '\0';
+      forcePenumbraClockRepaint = true;
+      requestUpdate();
+    } else {
+      PenumbraThemeUi::formatHeroTimeNow(penumbraLastDrawnTime, sizeof(penumbraLastDrawnTime));
+      forcePenumbraClockRepaint = false;
+    }
     return;
   }
 
@@ -2311,9 +2414,11 @@ void HomeActivity::onSelectBook(const std::string& path) {
   // never HALF a clean home just because the theme multipasses covers.
   const bool greysDirty = coverTheme && !greysSettled;
   const bool preferFast = bookIndexReady && !greysDirty;
-  if (!bookIndexReady && SETTINGS.readerDarkMode == 0) {
-    GUI.drawTopLeftStatus(renderer, tr(STR_STATUS_OPENING), /*refresh=*/true);
-  }
+  // Show "Opening" for EVERY book open. Do not gate on Dark Mode — the cue is the
+  // only feedback between Confirm and first ink, and windowed refresh keeps it
+  // visible through the activity swap.
+  GUI.drawTopLeftStatus(renderer, tr(STR_STATUS_OPENING), /*refresh=*/true);
+  SystemLog::logTiming("HOME", "opening_status painted dark=%d", SETTINGS.readerDarkMode ? 1 : 0);
 
   const uint32_t t0 = millis();
   activityManager.waitForRenderIdle();

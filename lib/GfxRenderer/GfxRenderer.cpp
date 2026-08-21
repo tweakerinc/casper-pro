@@ -2,6 +2,7 @@
 
 #include <BidiUtils.h>
 #include <BuildScratch.h>
+#include <Esp.h>
 #include <FontDecompressor.h>
 #include <HalGPIO.h>
 #include <Logging.h>
@@ -21,6 +22,35 @@ namespace {
  */
 uint8_t resolveSdCardStyle(const SdCardFont& font, const EpdFontFamily::Style style) {
   return font.resolveStyle(static_cast<uint8_t>(style));
+}
+
+// 2-bit glyph sample: returns draw-pipeline value (0 black … 3 white).
+inline uint8_t sample2BitBmpVal(const uint8_t* bitmap, const int width, const int height, const int x,
+                                const int y) {
+  if (x < 0 || y < 0 || x >= width || y >= height) return 3;
+  const int pos = y * width + x;
+  const uint8_t byte = bitmap[pos >> 2];
+  const uint8_t raw = (byte >> ((3 - (pos & 3)) * 2)) & 0x3;
+  return static_cast<uint8_t>(3 - raw);
+}
+
+// Whether a 2-bit pixel should be inked in the BW pass for the given weight.
+// Mild inks light fringe (bmpVal==2) only when ≥2 orthogonal neighbors are
+// already dark/black — fills AA holes without expanding flat stem edges (the
+// thing that made capitals read bold under Dense).
+inline bool inkBw2Bit(const uint8_t bmpVal, const GfxRenderer::BwGlyphWeight weight, const uint8_t* bitmap,
+                      const int width, const int height, const int x, const int y) {
+  if (bmpVal >= 3) return false;       // white
+  if (bmpVal < 2) return true;         // solid + dark fringe — all weights
+  // bmpVal == 2: light fringe
+  if (weight == GfxRenderer::BwGlyphWeight::Normal) return false;
+  if (weight == GfxRenderer::BwGlyphWeight::Dense) return true;
+  int darkN = 0;
+  if (sample2BitBmpVal(bitmap, width, height, x - 1, y) < 2) ++darkN;
+  if (sample2BitBmpVal(bitmap, width, height, x + 1, y) < 2) ++darkN;
+  if (sample2BitBmpVal(bitmap, width, height, x, y - 1) < 2) ++darkN;
+  if (sample2BitBmpVal(bitmap, width, height, x, y + 1) < 2) ++darkN;
+  return darkN >= 2;
 }
 }  // namespace
 
@@ -158,7 +188,8 @@ bool GfxRenderer::restoreFrameBufferAfterBuild() {
   return frameBuffer != nullptr;
 }
 
-GfxRenderer::FrameBufferLoan::FrameBufferLoan(GfxRenderer& renderer) : renderer_(renderer) {
+GfxRenderer::FrameBufferLoan::FrameBufferLoan(GfxRenderer& renderer, bool enabled) : renderer_(renderer) {
+  if (!enabled) return;  // caller's screen still owns the pixels
   // Nesting guard: if the framebuffer is already lent out (an outer loan),
   // stay inert so this end() cannot return storage the outer loan still owns.
   if (!renderer_.hasFrameBuffer()) return;
@@ -334,9 +365,10 @@ static void renderCharScaledNx(const GfxRenderer& renderer, GfxRenderer::RenderM
         const uint8_t byte = bitmap[pos >> 2];
         const uint8_t raw = (byte >> ((3 - (pos & 3)) * 2)) & 0x3;
         const uint8_t bmpVal = static_cast<uint8_t>(3 - raw);
-        // BW: only solid + dark fringe (skip light AA = grainy speckles without greys).
-        // Greys multipass recovers light fringe when Text AA is on.
-        if (renderMode == GfxRenderer::BW && bmpVal >= 2) continue;
+        if (renderMode == GfxRenderer::BW &&
+            !inkBw2Bit(bmpVal, renderer.bwGlyphWeight(), bitmap, srcW, srcH, srcX, srcY)) {
+          continue;
+        }
         if (renderMode == GfxRenderer::GRAYSCALE_MSB && bmpVal != 1 && bmpVal != 2) continue;
         if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal != 1) continue;
         const bool state = (renderMode == GfxRenderer::BW) ? pixelState : false;
@@ -510,8 +542,8 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           // 0 black / 1 dark grey / 2 light grey / 3 white.
           const uint8_t bmpVal = static_cast<uint8_t>(3 - ((byte >> bit_index) & 0x3));
 
-          if (renderMode == GfxRenderer::BW && bmpVal < 2) {
-            // Solid + dark fringe only — light AA fringe as black looked grainy on BW-only.
+          if (renderMode == GfxRenderer::BW &&
+              inkBw2Bit(bmpVal, renderer.bwGlyphWeight(), bitmap, width, height, glyphX, glyphY)) {
             renderer.drawPixel(screenX, screenY, pixelState);
           } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
             // Both AA fringes on MSB (historical default "Dark" look).
@@ -548,6 +580,16 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
   }
 }
 
+namespace {
+// Per-frame budget for drawPixel's out-of-range complaint. Reset by clearScreen()
+// rather than by drawPixel itself: re-arming on every valid pixel would put a
+// store on the hottest path in the renderer.
+constexpr uint16_t kMaxOutOfRangeLogsPerFrame = 8;
+uint16_t g_outOfRangeLogs = 0;
+}  // namespace
+
+void GfxRenderer::resetOutOfRangeLogBudget() { g_outOfRangeLogs = 0; }
+
 // IMPORTANT: This function is in critical rendering path and is called for every pixel. Please keep it as simple and
 // efficient as possible.
 void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
@@ -559,7 +601,19 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
 
   // Bounds checking against runtime panel dimensions
   if (phyX < 0 || phyX >= panelWidth || phyY < 0 || phyY >= panelHeight) {
-    LOG_ERR("GFX", "!! Outside range (%d, %d) -> (%d, %d)", x, y, phyX, phyY);
+    // Rate-limited per frame: this is per-pixel. A single off-by-one in any
+    // drawing routine (a glyph one column past the margin, an oversized bitmap)
+    // used to emit one serial line PER OUT-OF-RANGE PIXEL — tens of thousands of
+    // lines for one bad frame, which at 115200 baud stalls the render task for
+    // seconds and turns a cosmetic clipping bug into a device-wide freeze.
+    // The budget is re-armed by clearScreen() (once per frame), so every frame
+    // still reports its own defect but no frame can flood the link.
+    if (g_outOfRangeLogs < kMaxOutOfRangeLogsPerFrame) {
+      ++g_outOfRangeLogs;
+      LOG_ERR("GFX", "!! Outside range (%d, %d) -> (%d, %d)%s", x, y, phyX, phyY,
+              g_outOfRangeLogs == kMaxOutOfRangeLogsPerFrame ? " (further out-of-range pixels this frame suppressed)"
+                                                            : "");
+    }
     return;
   }
 
@@ -1683,6 +1737,7 @@ static unsigned long start_ms = 0;
 
 void GfxRenderer::clearScreen(const uint8_t color) const {
   start_ms = millis();
+  resetOutOfRangeLogBudget();  // new frame: let it report its own clipping defects
   if (_stripActive) {
     // Clear only the active band's scratch, not the shared framebuffer.
     memset(_stripBuf, color, static_cast<size_t>(panelWidthBytes) * _stripRows);
@@ -2419,6 +2474,14 @@ void GfxRenderer::freeBwBufferChunks() {
  * Uses chunked allocation to avoid needing 48KB of contiguous memory.
  * Returns true if buffer was stored successfully, false if allocation failed.
  */
+bool GfxRenderer::canStoreBwBuffer(const size_t headroomBytes) const {
+  if (!frameBuffer) return false;
+  // Total free heap must cover the whole snapshot plus the caller's headroom...
+  if (ESP.getFreeHeap() < static_cast<size_t>(frameBufferSize) + headroomBytes) return false;
+  // ...but contiguity is only ever needed one chunk at a time.
+  return ESP.getMaxAllocHeap() >= BW_BUFFER_CHUNK_SIZE;
+}
+
 bool GfxRenderer::storeBwBuffer() {
   // Allocate and copy each chunk
   for (size_t i = 0; i < bwBufferChunks.size(); i++) {

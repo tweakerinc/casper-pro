@@ -84,28 +84,21 @@ bool safeAppendLit(std::string& dst, const char* lit) {
   return true;
 }
 
-// Map fancy punctuation to glyphs every builtin face has (avoids tofu / "missing glyphs").
+// Normalize only what we must; keep real book typography.
+//
+// This used to flatten curly quotes to ' and ", en/em dashes to -, and the
+// ellipsis to "...", on the grounds of avoiding tofu. The builtin faces carry
+// all of those (see builtinFonts/literata_*: U+2014, U+2018/19, U+201C/D/E),
+// so the mapping bought nothing and cost the thing that makes a page look
+// typeset rather than like a plain-text dump — which is precisely the "feels
+// cheap, not book-like" complaint. Zero-width and formatting characters are
+// still dropped, and no-break spaces still become spaces, because those DO
+// break layout rather than merely look different.
 bool appendNormalizedUtf8(std::string& dst, uint32_t cp) {
   switch (cp) {
     case 0x00A0:  // nbsp
     case 0x202F:  // narrow nbsp
       return safePushChar(dst, ' ');
-    case 0x2018:
-    case 0x2019:
-    case 0x201A:
-    case 0x2032:
-      return safePushChar(dst, '\'');
-    case 0x201C:
-    case 0x201D:
-    case 0x201E:
-    case 0x2033:
-      return safePushChar(dst, '"');
-    case 0x2013:
-    case 0x2014:
-    case 0x2212:
-      return safePushChar(dst, '-');
-    case 0x2026:
-      return safeAppendLit(dst, "...");
     case 0x00AD:  // soft hyphen
     case 0x200B:  // zwsp
     case 0x200C:
@@ -540,17 +533,13 @@ void applyInlineStyle(const Tag& tag, RunStyle& styleInOut, SizeStep& sizeInOut,
   if (containsI(v, vlen, "font-weight:bold") || containsI(v, vlen, "font-weight: bold") ||
       containsI(v, vlen, "font-weight:700") || containsI(v, vlen, "font-weight: 700") ||
       containsI(v, vlen, "font-weight:600") || containsI(v, vlen, "font-weight:800")) {
-    if (styleInOut == RunStyle::Italic)
-      styleInOut = RunStyle::BoldItalic;
-    else if (styleInOut == RunStyle::Regular)
-      styleInOut = RunStyle::Bold;
+    // Bit-set, not value-replace: RunStyle is a bitmask, so the old value tests
+    // dropped any decoration already carried on the run.
+    styleInOut |= RunStyle::Bold;
   }
   if (containsI(v, vlen, "font-style:italic") || containsI(v, vlen, "font-style: italic") ||
       containsI(v, vlen, "font-style:oblique")) {
-    if (styleInOut == RunStyle::Bold)
-      styleInOut = RunStyle::BoldItalic;
-    else if (styleInOut == RunStyle::Regular)
-      styleInOut = RunStyle::Italic;
+    styleInOut |= RunStyle::Italic;
   }
   // Size bumps never shrink an already-larger step (h1 Plus2 must stick).
   if (containsI(v, vlen, "font-size:2em") || containsI(v, vlen, "font-size: 2em") ||
@@ -583,23 +572,16 @@ void applyClassEmphasis(const Tag& tag, RunStyle& styleInOut, SizeStep& sizeInOu
   const char* v = attrValue(tag, "class", &vlen);
   if (!v || vlen == 0) return;
   if (containsI(v, vlen, "bold") || containsI(v, vlen, "strong") || containsI(v, vlen, "bolder")) {
-    if (styleInOut == RunStyle::Italic)
-      styleInOut = RunStyle::BoldItalic;
-    else if (styleInOut == RunStyle::Regular)
-      styleInOut = RunStyle::Bold;
+    styleInOut |= RunStyle::Bold;
   }
   if (containsI(v, vlen, "italic") || containsI(v, vlen, "oblique") || containsI(v, vlen, "emphasis") ||
       containsI(v, vlen, "emph") || containsI(v, vlen, "cite")) {
-    if (styleInOut == RunStyle::Bold)
-      styleInOut = RunStyle::BoldItalic;
-    else if (styleInOut == RunStyle::Regular)
-      styleInOut = RunStyle::Italic;
+    styleInOut |= RunStyle::Italic;
   }
   // Alice .chapter is larger regular, not bold — skip bold promotion.
   if (looksLikeTitleHost(tag) && !classIsChapterLeftTitle(tag)) {
     if (sizeInOut < SizeStep::Plus1) sizeInOut = SizeStep::Plus1;
-    if (styleInOut == RunStyle::Regular) styleInOut = RunStyle::Bold;
-    if (styleInOut == RunStyle::Italic) styleInOut = RunStyle::BoldItalic;
+    styleInOut |= RunStyle::Bold;
   } else if (classIsChapterLeftTitle(tag)) {
     if (sizeInOut < SizeStep::Plus1) sizeInOut = SizeStep::Plus1;
   }
@@ -749,27 +731,41 @@ bool HtmlToIr::convert(const char* html, const size_t len, ChapterIr& out, const
   // Book Style CSS approximation: h2+p, hgroup+p, hr+p, p:first-child → text-indent: 0.
   // Armed when a heading/hgroup/hr ends; consumed by the next body <p>.
   bool noIndentNextParagraph = false;
+  // >0 inside a <table>; >1 means a nested table whose content is discarded.
+  int tableDepth = 0;
 
   // Style stack is block-scoped. Unclosed <span>/<b>/<i> used to leak frames;
-  // after 16 silent push failures the stuck face (often Bold from an <h1>) painted
+  // after silent push failures the stuck face (often Bold from an <h1>) painted
   // the rest of the chapter bold — classic "OH, MAN," normal then everything bold.
-  StyleFrame stack[16];
+  // 32 frames is cheap (2 bytes each) and covers deeply nested EPUB emphasis
+  // without dropping styles. On overflow we OR the new face onto the top rather
+  // than replacing it, so bold/italic cannot silently vanish mid-chapter.
+  StyleFrame stack[32];
   int stackTop = 0;
   int styleFloor = 0;  // never pop below this (current block's base face)
+  bool styleOverflowLogged = false;
   stack[0] = {};
 
   auto curStyle = [&]() -> StyleFrame& { return stack[stackTop]; };
 
   auto pushStyle = [&](const RunStyle st, const SizeStep sz) {
-    if (stackTop + 1 < 16) {
+    if (stackTop + 1 < 32) {
       ++stackTop;
       stack[stackTop].style = st;
       stack[stackTop].size = sz;
       return;
     }
-    // Stack full: replace top rather than silently keep a leaked Bold/Italic.
-    stack[stackTop].style = st;
-    stack[stackTop].size = sz;
+    // Stack full: merge onto the top. Replacing used to drop the accumulated
+    // face when a deep nest pushed Bold over Italic (or vice versa) and later
+    // pops could not unwind — styles looked like they "stopped working".
+    stack[stackTop].style = stack[stackTop].style | st;
+    if (static_cast<int>(sz) > static_cast<int>(stack[stackTop].size)) {
+      stack[stackTop].size = sz;
+    }
+    if (!styleOverflowLogged) {
+      styleOverflowLogged = true;
+      LOG_DBG("RVIR", "style stack full — merging faces (chapter has deep nesting)");
+    }
   };
   auto popStyle = [&]() {
     // Never pop through the current block's base face (orphan </span> after
@@ -844,16 +840,12 @@ bool HtmlToIr::convert(const char* html, const size_t len, ChapterIr& out, const
     }
   };
 
-  auto mergeBold = [&](RunStyle base) {
-    if (base == RunStyle::Italic) return RunStyle::BoldItalic;
-    if (base == RunStyle::BoldItalic) return RunStyle::BoldItalic;
-    return RunStyle::Bold;
-  };
-  auto mergeItalic = [&](RunStyle base) {
-    if (base == RunStyle::Bold) return RunStyle::BoldItalic;
-    if (base == RunStyle::BoldItalic) return RunStyle::BoldItalic;
-    return RunStyle::Italic;
-  };
+  // Bit operations, not value comparisons: RunStyle is a bitmask now, so the old
+  // `base == RunStyle::Italic` style tests would have silently dropped any
+  // decoration already on the frame (bold inside underline lost the underline).
+  auto mergeBold = [&](RunStyle base) { return base | RunStyle::Bold; };
+  auto mergeItalic = [&](RunStyle base) { return base | RunStyle::Italic; };
+  auto mergeDecoration = [&](RunStyle base, RunStyle bit) { return base | bit; };
 
   while (p < end && !out.failed()) {
     if (*p == '<') {
@@ -928,6 +920,39 @@ bool HtmlToIr::convert(const char* html, const size_t len, ChapterIr& out, const
       }
       if (tag.closing && ieq(tag.name, tag.nameLen, "li")) {
         closeBlock();
+        continue;
+      }
+
+      // Tables. Rivulet has no table block kind and building real column layout
+      // on a 480px panel is not worth it, so mirror exactly what the classic
+      // engine did: stream each cell as its own block, no "Row N Cell M" chrome,
+      // and discard nested tables. Without this, table/tr/td/th were simply
+      // unknown tags and every cell ran together into one unreadable paragraph -
+      // many EPUBs use tables purely as layout vehicles for caption/image pairs.
+      if (ieq(tag.name, tag.nameLen, "table")) {
+        if (!tag.closing && !tag.selfClose) {
+          closeBlock();
+          ++tableDepth;
+        } else if (tag.closing && tableDepth > 0) {
+          closeBlock();
+          --tableDepth;
+        }
+        continue;
+      }
+      if (tableDepth > 1) {
+        // Inside a nested table: drop its markup and text entirely (classic parity).
+        continue;
+      }
+      if (tableDepth == 1 &&
+          (ieq(tag.name, tag.nameLen, "td") || ieq(tag.name, tag.nameLen, "th") ||
+           ieq(tag.name, tag.nameLen, "tr"))) {
+        closeBlock();
+        if (!tag.closing && !tag.selfClose &&
+            (ieq(tag.name, tag.nameLen, "td") || ieq(tag.name, tag.nameLen, "th"))) {
+          // One cell = one block. Tight stack, no first-line indent, same as <li>.
+          openBlock(BlockKind::Paragraph, Align::Left, kBlockNoIndent);
+          out.setCurrentMarginsEmQ4(0, 2);
+        }
         continue;
       }
 
@@ -1419,6 +1444,35 @@ bool HtmlToIr::convert(const char* html, const size_t len, ChapterIr& out, const
         continue;
       }
 
+      // Text decorations and scripts. These were dropped entirely before v20:
+      // <sup> footnote markers rendered full-size on the baseline, and <u>/<s>/
+      // <del>/<ins> passages lost the very thing that gave them meaning.
+      // GfxRenderer::drawText already understands the SUP/SUB bits (it scales the
+      // glyph and halves the advance); underline/strikethrough are painted as
+      // lines by RivuletEngine::paint, matching the classic TextBlock::render.
+      {
+        RunStyle decoration = RunStyle::Regular;
+        if (ieq(tag.name, tag.nameLen, "sup")) {
+          decoration = RunStyle::Superscript;
+        } else if (ieq(tag.name, tag.nameLen, "sub")) {
+          decoration = RunStyle::Subscript;
+        } else if (ieq(tag.name, tag.nameLen, "u") || ieq(tag.name, tag.nameLen, "ins")) {
+          decoration = RunStyle::Underline;
+        } else if (ieq(tag.name, tag.nameLen, "s") || ieq(tag.name, tag.nameLen, "strike") ||
+                   ieq(tag.name, tag.nameLen, "del")) {
+          decoration = RunStyle::Strikethrough;
+        }
+        if (decoration != RunStyle::Regular) {
+          flushText();
+          if (tag.closing) {
+            popStyle();
+          } else if (!tag.selfClose) {
+            pushStyle(mergeDecoration(curStyle().style, decoration), curStyle().size);
+          }
+          continue;
+        }
+      }
+
       // span / font: inherit + class/style emphasis
       if (!tag.closing && (ieq(tag.name, tag.nameLen, "span") || ieq(tag.name, tag.nameLen, "font")) &&
           !tag.selfClose) {
@@ -1439,7 +1493,10 @@ bool HtmlToIr::convert(const char* html, const size_t len, ChapterIr& out, const
       continue;
     }
 
-    if (inSkip || inHidden) {
+    // tableDepth > 1 = inside a nested table, whose content the classic engine
+    // discarded too. Suppressing only its tags would still let its text leak into
+    // the surrounding block.
+    if (inSkip || inHidden || tableDepth > 1) {
       ++p;
       continue;
     }
@@ -1471,6 +1528,19 @@ bool HtmlToIr::convert(const char* html, const size_t len, ChapterIr& out, const
     // Chunk long text runs; flush before textAcc needs a large reallocation.
     size_t remain = static_cast<size_t>(p - t0);
     const char* chunk = t0;
+    // After </i>/</b>/<span>, HTML whitespace is often the ONLY separator before
+    // the next word. appendCollapsedText drops leading spaces when dst is empty,
+    // which glued "Vampire"+"skill". If this block already has runs, keep one
+    // leading space when the chunk starts with whitespace.
+    if (remain > 0 && textAcc.empty() && inBlock && !out.blocks().empty() && out.blocks().back().runCount > 0) {
+      const char c0 = *chunk;
+      if (c0 == ' ' || c0 == '\n' || c0 == '\t' || c0 == '\r') {
+        if (!safePushChar(textAcc, ' ')) {
+          out.markFailed();
+          break;
+        }
+      }
+    }
     while (remain > 0 && !out.failed()) {
       if (textAcc.size() > 1536) flushText();
       const size_t take = std::min(remain, size_t(400));

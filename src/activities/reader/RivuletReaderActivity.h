@@ -81,8 +81,11 @@ class RivuletReaderActivity final : public Activity {
   static bool extractEpubItem(void* ctx, const char* srcPath, const char* destPath);
   bool fireMenuShortcut(uint8_t function);
   bool tryLongPressShortcut(uint8_t function, bool& suppressRelease);
-  // Side long-press: cycle Reading Orientation (Settings → Long-Press Buttons).
+  bool trySideLongPressShortcut();
+  // Side long-press: cycle all orientations, or flip Portrait ↔ Flip With.
   void cycleReadingOrientation(bool nextTriggered);
+  void flipReadingOrientation();
+  void applyReadingOrientation(uint8_t newOrientation);
   // Chapter skip: land at chapter start (next) or previous chapter last page / this chapter start.
   void chapterSkipNext();
   void chapterSkipPrev();
@@ -119,6 +122,36 @@ class RivuletReaderActivity final : public Activity {
   void persistPageMapIfComplete();
   // Idle: extend current-spine page map a few pages (B). No full-book map (D).
   void tickIdlePageMap();
+  // After open/spine land: index ~10 pages ahead (+ behind RAM) for fast turns.
+  void warmOpenNavigationWindow();
+  // Build + persist one spine's page map, restoring the reader's place after.
+  // This is what makes PageBack into the previous chapter land on its real last
+  // page (CrossInk section.bin feel).
+  bool indexSpinePageMap(int spine);
+  // After current chapter map completes: quietly prime next spine (2 pages).
+  bool warmNextSpinePrefix(int pages);
+  void tickNextSpineWarmIfIdle();
+  [[nodiscard]] bool spineHasPageMap(int spine) const;
+  [[nodiscard]] int nearestSpineWithoutMap(bool preferBackward, bool adjacentOnly) const;
+  // Idle: index the remaining chapters one at a time so the whole book ends up
+  // mapped on SD (INX-style), without ever blocking a page turn or first ink.
+  void tickBackgroundIndexer();
+
+  // Text + overlays only, in whatever render mode is active. Shared by the BW
+  // paint and the greyscale AA passes (images are already 1-bit plates baked
+  // into the BW frame, so re-decoding them under the ~48 KB AA hold is what
+  // aborted image-heavy pages).
+  void paintTextLayerForAa();
+  // Re-run the AA passes over the page already on glass.
+  //
+  // First ink deliberately paints BW so the page appears fast, and a transient
+  // heap dip can decline AA mid-book as well. ReaderActivity.h has advertised
+  // "first ink is BW only; AA catch-up render follows" since deferFirstPageTextAa
+  // was introduced, but nothing ever performed that follow-up — the page just
+  // stayed un-smoothed until the next turn. This is the missing render, and it
+  // is what produces the "text appears, then sharpens a moment later" behaviour.
+  void tickAaCatchUp();
+  void scheduleAaCatchUp();
   // Keep page glyph buffers only when free/maxAlloc leave room for next turn/UI.
   static bool canRetainGlyphCache();
 
@@ -160,12 +193,50 @@ class RivuletReaderActivity final : public Activity {
   bool error_ = false;
   bool firstPaint_ = true;
   bool ignoreNextConfirmRelease_ = false;
-  bool ignoreNextBackRelease_ = false;  // after long-press Back shortcut
+  // After a side long-press shortcut fires while held, ignore that key's release
+  // so it does not also page-turn (same pattern as Confirm).
+  bool ignoreNextSideRelease_ = false;
   bool pendingConfirmMenuOpen_ = false;
   bool pageMapDirty_ = false;  // map grew since last SD save
   // True while walking prev-chapter to true last page — render shows Loading only
   // (yield mid-walk must not paint intermediate pages onto the glass).
   bool chapterNavBusy_ = false;
+  // Guard re-entry while warmPreviousSpinePageMap temporarily loads another spine.
+  bool warmingAdjacent_ = false;
+  // Set once the first page is on glass: only then may the idle tick spend time
+  // indexing the adjacent chapter. Never index before first ink.
+  bool firstInkDone_ = false;
+  // Deferred/declined AA owes the current page a greyscale pass — see
+  // tickAaCatchUp. Cleared as soon as AA actually runs for that page.
+  bool aaCatchUpPending_ = false;
+  // Set by the catch-up tick, consumed by the next render: overrides the
+  // first-ink/scrub terms that declined AA, so the repaint it asked for is
+  // actually allowed to anti-alias.
+  bool forceAaThisRender_ = false;
+  unsigned long aaCatchUpAtMs_ = 0;
+  uint8_t aaCatchUpTries_ = 0;
+  // Page the retry budget belongs to; moving to another page refills it.
+  int aaCatchUpSpine_ = -1;
+  int aaCatchUpPage_ = -1;
+  // Long enough that the BW page is unambiguously on glass first (the point of
+  // deferring), short enough to read as the same action.
+  static constexpr unsigned long kAaCatchUpDelayMs = 350;
+  // Heap may still refuse; retry a couple of times, then leave the page BW
+  // rather than spin a full-screen greyscale attempt forever.
+  static constexpr uint8_t kAaCatchUpMaxTries = 3;
+  // Every readable spine has a .rvpm — background indexer can stop.
+  bool bookIndexComplete_ = false;
+  unsigned long lastIndexPassMs_ = 0;
+  // Spine we last tried to index. A partial-IR chapter never yields a saved map,
+  // so without this guard the idle tick re-indexes it forever (blocking, seconds
+  // per attempt) and page turns appear frozen.
+  int lastIndexAttemptSpine_ = -1;
+  // Spine we last attempted to prefix-warm from (current chapter). -1 = none.
+  int lastNextSpineWarmFrom_ = -1;
+  // Reader must be settled this long before the indexer may take the bus, and
+  // this long between chapters so input stays responsive.
+  static constexpr unsigned long kBackgroundIndexIdleMs = 6000;
+  static constexpr unsigned long kBackgroundIndexGapMs = 1500;
   bool currentPageBookmarked_ = false;
   // Brief center toast after corner/menu bookmark toggle (non-blocking; cleared in loop).
   unsigned long bookmarkToastUntilMs_ = 0;
@@ -181,5 +252,16 @@ class RivuletReaderActivity final : public Activity {
   bool heavyReleasedForUi_ = false;
   int heldSpineForUi_ = 0;
   int heldPageForUi_ = 0;
+  // Last position actually written by saveProgress(), so repeat calls for an
+  // unchanged position are skipped. saveProgress() is invoked from ~20 sites
+  // (menu open/close, sleep entry, orientation change, bookmark, KO sync, exit)
+  // and each call is a ProgressFile::writeAtomic — several FAT operations for
+  // six bytes. The classic reader guarded this the same way; the rewrite lost
+  // it, which put redundant SD writes on the paths the user feels and burns
+  // erase cycles for nothing (Resource Protocol rule 8).
+  // -1 = nothing written yet this session.
+  mutable int lastSavedSpine_ = -1;
+  mutable int lastSavedPage_ = -1;
+  mutable int lastSavedPageCount_ = -1;
   std::string errorMsg_;
 };
