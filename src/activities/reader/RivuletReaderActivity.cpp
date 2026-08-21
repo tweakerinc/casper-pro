@@ -131,7 +131,7 @@ void RivuletReaderActivity::configureRenderKey() {
   }
 
   // Match EpubReader computeReaderViewportLayout: top chrome air + bottom status.
-  // Touch devices (X4 Pro): no soft Back/Done strip — reclaim that band for text.
+  // X4 Pro paints tappable Home/Menu pills in the front-key strip (no GPIOs).
   int oTop = 0, oRight = 0, oBottom = 0, oLeft = 0;
   renderer.getOrientedViewableTRBL(&oTop, &oRight, &oBottom, &oLeft);
   const int screenMargin = static_cast<int>(SETTINGS.screenMargin);
@@ -140,7 +140,7 @@ void RivuletReaderActivity::configureRenderKey() {
   const bool touchNoChrome = gpio.hasTouch() && !gpio.needsOnScreenFrontChrome();
   // Landscape front-key chrome is a *side* strip (CCW right / CW left). Keep body
   // text clear of it so dictionary/clip can still see edge words (same idea as
-  // bottom reserve in portrait). Skip on pure-touch Pro (no soft front strip).
+  // bottom reserve in portrait).
   const auto orient = renderer.getOrientation();
   const bool landscapeCw = orient == GfxRenderer::Orientation::LandscapeClockwise;
   const bool landscapeCcw = orient == GfxRenderer::Orientation::LandscapeCounterClockwise;
@@ -159,10 +159,7 @@ void RivuletReaderActivity::configureRenderKey() {
   // oriented top if it's already large on some panels.
   marginY_ = std::max(0, oTop + screenMargin + ReaderUtils::readerTopChromeExtra());
 
-  // Bottom: status chrome only. Touch-first Pro has no soft hint strip — keep
-  // reserve tight so the last text line sits close to the status bar.
-  // readerBottomChromeExtra mirrored top air and left a large dead band; use a
-  // small pad instead of the full top extra on touch devices.
+  // Bottom: status chrome. Front-button hint strip in portrait when chrome is on.
   const int bottomChromeAir =
       touchNoChrome ? std::max(4, ReaderUtils::kReaderBottomChromePad)
                     : ReaderUtils::readerBottomChromeExtra();
@@ -390,7 +387,7 @@ static bool buildPageWordBoxes(GfxRenderer& renderer, const rivulet::LaidOutPage
   boxes.reserve(128);
   pool.reserve(128);
 
-  // Touch-first: no soft button strip — use full safe area for selectable words.
+  // Reserve the front-button strip when it is on screen (dictionary/clip tools).
   const bool touchNoChrome = gpio.hasTouch() && !gpio.needsOnScreenFrontChrome();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, /*hasFrontButtonHints=*/!touchNoChrome,
                                                              /*hasSideButtonHints=*/false);
@@ -3654,6 +3651,10 @@ void RivuletReaderActivity::render(RenderLock&& lock) {
   };
   paintPageContent();
   renderStatusBar();
+  if (mappedInput.needsOnScreenFrontChrome()) {
+    // Same slots as X3/X4 front keys: Back → Home, Confirm → Menu.
+    GUI.drawButtonHints(renderer, tr(STR_HOME), tr(STR_MENU), nullptr, nullptr);
+  }
   // Non-blocking bookmark feedback pill (drawn into FB; cleared when toast expires).
   if (bookmarkToastUntilMs_ != 0 && bookmarkToastMsg_ != nullptr &&
       static_cast<long>(millis() - bookmarkToastUntilMs_) < 0) {

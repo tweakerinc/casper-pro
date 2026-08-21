@@ -458,23 +458,48 @@ bool MappedInputManager::wasTopRightToLeftGesture() const {
 }
 
 namespace {
-// Soft bottom chrome (X4 Pro): map strip taps to logical front buttons so
-// activities that use wasReleased(Back)/Confirm work without physical keys.
+// Soft front chrome (X4 Pro): map strip taps to the same slots BaseTheme paints
+// so Menu/Library/Recents/Read work without physical front keys.
 int softChromeReleasedSlot(const MappedInputManager& input, HalGPIO& gpio, const GfxRenderer& renderer) {
   if (!gpio.needsOnScreenFrontChrome()) return -1;
   int tx = 0;
   int ty = 0;
   if (!input.wasScreenTapped(tx, ty)) return -1;
+
+  constexpr int kButtonW = 80;
+  constexpr int kX4Positions[] = {58, 146, 254, 342};
+  constexpr int kX3Positions[] = {65, 157, 291, 383};
+  constexpr uint8_t kSlotToBtn[] = {HalGPIO::BTN_BACK, HalGPIO::BTN_CONFIRM, HalGPIO::BTN_LEFT, HalGPIO::BTN_RIGHT};
+  const int* positions = gpio.deviceIsX3() ? kX3Positions : kX4Positions;
   const int pageW = renderer.getScreenWidth();
   const int pageH = renderer.getScreenHeight();
-  constexpr int kButtonW = 80;
-  constexpr int kPositions[] = {58, 146, 254, 342};
-  constexpr uint8_t kSlotToBtn[] = {HalGPIO::BTN_BACK, HalGPIO::BTN_CONFIRM, HalGPIO::BTN_LEFT, HalGPIO::BTN_RIGHT};
-  const int stripH = std::max(40, pageH / 12);
-  const int barY = pageH - stripH;
-  if (ty < barY) return -1;
+  const int stripDepth = BaseTheme::frontButtonHintReserve(renderer);
+  const auto orient = renderer.getOrientation();
+  const bool landscapeCw = orient == GfxRenderer::LandscapeClockwise;
+  const bool landscapeCcw = orient == GfxRenderer::LandscapeCounterClockwise;
+  const bool inverted = orient == GfxRenderer::PortraitInverted;
+
+  if (landscapeCw || landscapeCcw) {
+    const int stripX = landscapeCcw ? (pageW - stripDepth) : 0;
+    if (tx < stripX || tx >= stripX + stripDepth) return -1;
+    const int portraitSpan = gpio.deviceIsX3() ? 528 : 480;
+    constexpr int kClusterNudgeUp = 8;
+    for (int i = 0; i < 4; ++i) {
+      const int portraitCenterX = positions[i] + kButtonW / 2;
+      const int scaled = (portraitCenterX * pageH + portraitSpan / 2) / portraitSpan;
+      int yCenter = landscapeCcw ? (pageH - 1 - scaled) : scaled;
+      yCenter -= kClusterNudgeUp;
+      const int pillY = yCenter - kButtonW / 2;
+      if (ty >= pillY && ty < pillY + kButtonW) return static_cast<int>(kSlotToBtn[i]);
+    }
+    return -1;
+  }
+
+  const int barY = inverted ? 0 : (pageH - stripDepth);
+  if (ty < barY || ty >= barY + stripDepth) return -1;
   for (int i = 0; i < 4; ++i) {
-    const int x = kPositions[i];
+    int x = positions[i];
+    if (inverted) x = pageW - x - kButtonW;
     if (tx >= x && tx < x + kButtonW) return static_cast<int>(kSlotToBtn[i]);
   }
   const int slot = std::clamp(tx * 4 / std::max(1, pageW), 0, 3);
