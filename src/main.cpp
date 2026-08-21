@@ -429,7 +429,9 @@ void enterDeepSleep(bool fromTimeout, bool powerQuickResume) {
   display.deepSleep();
   // Frontlight off before deep sleep (same singleton as runtime). Prevents
   // "LEDs on + frozen moon" if a later wake hangs before first paint.
+  // Detach LEDC and gpio_hold the off level so isolate cannot float GPIO8/9.
   frontlight().off();
+  frontlight().holdOffForDeepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
   powerManager.startDeepSleep(gpio);

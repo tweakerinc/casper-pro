@@ -74,6 +74,10 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   // logSerial is the raw HWCDC reference; Serial is the MySerialImpl proxy
   // (which doesn't expose end()).
   logSerial.end();
+#elif defined(ARDUINO_USB_CDC_ON_BOOT)
+  // Release builds still compile USB CDC on boot; leave the PHY biased and S3
+  // deep-sleep current stays in the milliamp range. End the port either way.
+  Serial.end();
 #endif
 
 #if !SOC_PM_SUPPORT_EXT1_WAKEUP
@@ -87,13 +91,10 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   }
 #endif
 
-  // Cut the gated peripheral rails (touch/SD/EPD on boards like the Sticky) and
-  // hold the enables off through deep sleep — otherwise the GT911 and SD card
-  // stay powered all through "off" and drain the battery. No-op on boards with
-  // no switched rails (X4/X3). Trade-off: no touch-to-wake; wake is the power
-  // button. Must run after display.deepSleep() so the panel controller gets its
-  // deep-sleep command while its rail is still up (enterDeepSleep() in main.cpp
-  // guarantees that ordering).
+  // Cut gated rails (touch/SD/EPD, X4 Pro GPIO1 load-switch, frontlight PWM)
+  // and gpio_hold them off through deep sleep. Must run after display.deepSleep()
+  // so the panel controller gets its deep-sleep command while its rail is still
+  // up (enterDeepSleep() in main.cpp guarantees that ordering).
   freeink::PowerManager::powerDownRailsForSleep();
 
   // Waits for the power button to be physically released (so holding it doesn't

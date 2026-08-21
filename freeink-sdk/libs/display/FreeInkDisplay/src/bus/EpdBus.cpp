@@ -88,6 +88,11 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 
   SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
 
+  // Sleep path holds CS HIGH; the hold survives reset and would make the
+  // deselect write below a no-op until released.
+  if (pins.cs >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(pins.cs));
+  }
   pinMode(pins.cs, OUTPUT);
   pinMode(pins.dc, OUTPUT);
   // Release any deep-sleep hold on RST (powerDownRailsForSleep() holds it HIGH so

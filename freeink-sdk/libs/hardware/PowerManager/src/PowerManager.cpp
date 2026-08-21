@@ -143,9 +143,29 @@ void PowerManager::powerDownRailsForSleep() {
   // The mic enable also carries a polarity flag; OFF is the inactive level.
   holdRailOff(b.mic.enable, b.mic.enableActiveHigh ? LOW : HIGH);
 
-  // Master rail latches stay HIGH; peripheral enables above already cut loads.
-  holdLatchOn(b.power.latch0);
-  holdLatchOn(b.power.latch1);
+  // Frontlight PWM: isolate otherwise floats the pads. Active-high LEDs then
+  // glow (tens of mA). Hold the off level so gpio_deep_sleep_hold_en keeps them
+  // dark. Consumer should already have detached LEDC (FrontlightManager::holdOffForDeepSleep).
+  {
+    const uint8_t flOff = b.frontlight.activeHigh ? LOW : HIGH;
+    holdRailOff(b.frontlight.gpio, flOff);
+    holdRailOff(b.frontlight.gpioWarm, flOff);
+  }
+
+  // Keep CS idle-high so a floating chip-select cannot clock a sleeping panel
+  // out of DSLP (GPIO13 is CS on X4 Pro — never treat it as the C3 X4 MOSFET).
+  holdRailOff(b.display.cs, HIGH);
+
+  // Stay-alive latches (Sticky) stay HIGH. Peripheral load-switches (X4 Pro
+  // GPIO1) go LOW so EPD analog + SD VCC are actually off. Callers must have
+  // already sent the panel deep-sleep command while this rail was still up.
+  if (b.power.keepAssertedInSleep) {
+    holdLatchOn(b.power.latch0);
+    holdLatchOn(b.power.latch1);
+  } else {
+    holdRailOff(b.power.latch0, LOW);
+    holdRailOff(b.power.latch1, LOW);
+  }
 }
 
 void PowerManager::deepSleep() {

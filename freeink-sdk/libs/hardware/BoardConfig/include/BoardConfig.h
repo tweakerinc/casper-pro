@@ -590,6 +590,12 @@ struct DisplayOrientation {
 struct PowerConfig {
   int8_t latch0 = PIN_UNASSIGNED;
   int8_t latch1 = PIN_UNASSIGNED;
+  // true (default): MCU stay-alive latch (Sticky GPIO45/46) — keep HIGH in sleep
+  // so releasing the power button does not cut the chip.
+  // false: peripheral load-switch (X4 Pro GPIO1) — drive LOW in sleep after the
+  // panel has taken its deep-sleep command, otherwise the EPD analog + SD VCC
+  // stay biased and drain the pack in days.
+  bool keepAssertedInSleep = true;
 };
 
 struct BoardProfile {
@@ -1251,10 +1257,11 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // any SPI/display/SD bring-up (recovered: standalone OUTPUT, level=1, acted on first in
     // board_begin at IROM 0x420a23dc). Carried as power.latch0 so holdPowerRails() asserts it
     // early — without it the panel rail and the SD slot both stay unpowered (the bring-up
-    // symptom: EPD BUSY never asserts, SD returns 0xFF). GPIO2 is a second board-init output
-    // driven LOW (role unknown); not modeled here. NOTE: GPIO1/GPIO2 are therefore NOT the ADC
-    // button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
-    {1}};
+    // symptom: EPD BUSY never asserts, SD returns 0xFF). GPIO2 is the active-low touch
+    // enable (see touch.powerEnable). keepAssertedInSleep=false: GPIO1 is a load switch,
+    // not an MCU stay-alive latch — holding it HIGH through deep sleep keeps EPD analog
+    // and SD VCC biased (field: X4 Pro dead after a week of "sleep").
+    {1, PIN_UNASSIGNED, false}};
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to

@@ -2,6 +2,7 @@
 
 #if FREEINK_CAP_FRONTLIGHT
 #include <M5Pm1.h>
+#include <driver/gpio.h>
 
 namespace {
 constexpr uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
@@ -75,6 +76,13 @@ void FrontlightManager::begin() {
     return;
   }
   if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
+
+  // Sleep path gpio_hold_en's these pads LOW; the hold survives reset and would
+  // make LEDC attach a no-op until released.
+  gpio_hold_dis(static_cast<gpio_num_t>(fl.gpio));
+  if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {
+    gpio_hold_dis(static_cast<gpio_num_t>(fl.gpioWarm));
+  }
 
   attachChannel(fl.gpio, LEDC_CH_COOL, fl.pwmFrequency, fl.pwmResolutionBits);
   if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {
@@ -160,6 +168,35 @@ void FrontlightManager::setBrightness(uint8_t percent) {
 
 void FrontlightManager::off() { setBrightness(0); }
 void FrontlightManager::on() { setBrightness(_lastBrightness); }
+
+void FrontlightManager::holdOffForDeepSleep() {
+#if FREEINK_CAP_FRONTLIGHT
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (fl.viaPm1Pwm) {
+    pm1FrontlightWrite(0);
+    return;
+  }
+  auto park = [](int8_t gpio, bool activeHigh) {
+    if (gpio == BoardConfig::PIN_UNASSIGNED) return;
+#if defined(ARDUINO) && ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcDetach(gpio);
+#else
+    ledcDetachPin(gpio);
+#endif
+    const auto g = static_cast<gpio_num_t>(gpio);
+    gpio_hold_dis(g);
+    pinMode(gpio, OUTPUT);
+    digitalWrite(gpio, activeHigh ? LOW : HIGH);
+    gpio_hold_en(g);
+  };
+  park(fl.gpio, fl.activeHigh);
+  park(fl.gpioWarm, fl.activeHigh);
+  _begun = false;
+  _brightness = 0;
+#else
+  (void)0;
+#endif
+}
 
 void FrontlightManager::setColorTemperature(uint8_t warmPercent) {
 #if FREEINK_CAP_FRONTLIGHT

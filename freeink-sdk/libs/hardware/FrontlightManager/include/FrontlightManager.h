@@ -29,6 +29,11 @@ class FrontlightManager {
   void off();
   void on();
 
+  // Deep sleep: detach LEDC and gpio_hold the off level so isolate cannot float
+  // the LED pads. No-op when there is no frontlight. Call after off(), before
+  // PowerManager::powerDownRailsForSleep() / esp_sleep_config_gpio_isolate().
+  void holdOffForDeepSleep();
+
   // Warm/cool mix, 0 = fully cool, 100 = fully warm, 50 = neutral. Only meaningful on a
   // two-channel board (hasColorTemperature()); a no-op on single-channel frontlights.
   void setColorTemperature(uint8_t warmPercent);
