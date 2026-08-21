@@ -330,7 +330,9 @@ INT=10/RST=4, `swapXY = true`, `gt911CoordsAtByte0 = true`, no config upload.
 
 - **Touch flip** — `flipX`/`flipY` still to confirm with a corner-tap test (taps
   register and navigate; only the axis mirroring may need a tweak).
-- **Deep-sleep power** — SD/touch enables are active-low on this board; the sleep path
-  drives them to their off level by polarity (implemented) — worth a power-draw check.
+- **Deep-sleep power** — SD/touch enables are active-low and are held at their off
+  level. Frontlight PWM (GPIO8/9) is now detached and held at the inactive level
+  too: isolate used to float those pads while GPIO1 kept the LED supply up. Still
+  worth a current-draw check on a unit (RTC + CW2017 stay on that master rail).
 - **USB-MSC** ("USB Transfer" — SD over USB) is present in stock firmware but not ported.
 - **Panel orientation** (ships `NO_FLIP`; native SSD1677 scan is 800×480 landscape).

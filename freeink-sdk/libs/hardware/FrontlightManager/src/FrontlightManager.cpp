@@ -2,6 +2,7 @@
 
 #if FREEINK_CAP_FRONTLIGHT
 #include <M5Pm1.h>
+#include <driver/gpio.h>
 
 namespace {
 constexpr uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
@@ -75,6 +76,13 @@ void FrontlightManager::begin() {
     return;
   }
   if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
+
+  // Sleep holds PWM pins at OFF (PowerManager::powerDownRailsForSleep). That
+  // latch survives reset; release before LEDC attach or duty writes are no-ops.
+  gpio_hold_dis(static_cast<gpio_num_t>(fl.gpio));
+  if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {
+    gpio_hold_dis(static_cast<gpio_num_t>(fl.gpioWarm));
+  }
 
   attachChannel(fl.gpio, LEDC_CH_COOL, fl.pwmFrequency, fl.pwmResolutionBits);
   if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {

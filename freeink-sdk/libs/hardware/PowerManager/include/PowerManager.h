@@ -37,13 +37,17 @@ class PowerManager {
   // Drive every assigned peripheral power-rail enable in the active board
   // profile (display / SD / touch / mic) to its OFF level and latch it with
   // gpio_hold_en() so the load switches stay off through deep sleep (deepSleep()
-  // enables gpio_deep_sleep_hold_en(), which makes the holds persist). Without
-  // this, boards with gated rails (e.g. Sticky: GT911 on TP_PWR_EN, SD on
-  // SD_PWR_EN, EPD on EP_PWR_EN) leave those peripherals powered all through
-  // deep sleep — milliamps of standby drain. No-op on boards whose rails are
-  // PIN_UNASSIGNED (X4/X3). Call after the display driver's deep-sleep command
-  // and before deepSleep(); wake is a chip reset, so rails re-enable in the
-  // normal init path. NOTE: cutting the touch rail forfeits touch-to-wake.
+  // enables gpio_deep_sleep_hold_en(), which makes the holds persist). Also
+  // detaches LEDC and holds PWM frontlight pins at their inactive level —
+  // isolate otherwise floats them, and on boards whose master rail stays up
+  // (X4 Pro GPIO1) a floating active-high LED string leaks milliamps through
+  // "off". Without this, boards with gated rails (e.g. Sticky: GT911 on
+  // TP_PWR_EN, SD on SD_PWR_EN, EPD on EP_PWR_EN) leave those peripherals
+  // powered all through deep sleep. No-op on boards whose rails/frontlight
+  // are PIN_UNASSIGNED (X4/X3). Call after the display driver's deep-sleep
+  // command and before deepSleep(); wake is a chip reset, so rails re-enable
+  // in the normal init path. FrontlightManager::begin() releases the PWM holds.
+  // NOTE: cutting the touch rail forfeits touch-to-wake.
   static void powerDownRailsForSleep();
 
   // Isolate floating GPIOs to cut sleep current, then enter deep sleep. Does not

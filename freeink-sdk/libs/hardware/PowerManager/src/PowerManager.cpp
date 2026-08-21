@@ -121,6 +121,22 @@ void holdLatchOn(int8_t pin) {
   digitalWrite(pin, HIGH);
   gpio_hold_en(g);
 }
+
+// PWM frontlight has no rail-enable GPIO (X4 Pro cool=GPIO8 / warm=GPIO9).
+// LEDC duty 0 does not survive isolate — float + live LED supply leaks mA.
+void holdFrontlightOff(const BoardConfig::FrontlightConfig& fl) {
+  if (fl.viaPm1Pwm) return;
+  const uint8_t offLevel = fl.activeHigh ? LOW : HIGH;
+  for (const int8_t pin : {fl.gpio, fl.gpioWarm}) {
+    if (pin < 0) continue;
+#if defined(ARDUINO) && ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcDetach(static_cast<uint8_t>(pin));
+#else
+    ledcDetachPin(static_cast<uint8_t>(pin));
+#endif
+    holdRailOff(pin, offLevel);
+  }
+}
 }  // namespace
 
 void PowerManager::powerDownRailsForSleep() {
@@ -142,6 +158,7 @@ void PowerManager::powerDownRailsForSleep() {
   holdRailOff(b.touch.powerEnable, b.touch.powerEnableActiveHigh ? LOW : HIGH);
   // The mic enable also carries a polarity flag; OFF is the inactive level.
   holdRailOff(b.mic.enable, b.mic.enableActiveHigh ? LOW : HIGH);
+  holdFrontlightOff(b.frontlight);
 
   // Master rail latches stay HIGH; peripheral enables above already cut loads.
   holdLatchOn(b.power.latch0);
