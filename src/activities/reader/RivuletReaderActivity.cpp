@@ -253,9 +253,29 @@ void RivuletReaderActivity::persistProgressForSleep() {
   // Called while still foreground — before SleepActivity tears us down. Guarantees
   // progress.bin hits SD even if onExit is skipped or fails mid-teardown.
   if (!epub_ || !ready_) return;
+  // Idle glyph scan / AA overlap leave the FB white or as a different page
+  // while glass still holds this one. QR sleep FASTs the FB; restore first.
+  if (activityManager.isCurrentActivity(this) && !chapterNavBusy_) {
+    RenderLock lock(*this);
+    paintCurrentPageToFramebuffer();
+  }
   APP_STATE.openEpubPath = epub_->getPath();
   (void)saveProgress();
   persistHomeProgress(/*writeToDisk=*/true);
+}
+
+void RivuletReaderActivity::paintCurrentPageToFramebuffer() {
+  if (!ready_ || chapterNavBusy_ || !engine_.hasChapter()) return;
+  if (!engine_.ensureLaidOut(renderer)) return;
+  renderer.clearScreen(0xFF);
+  engine_.paint(renderer, marginX_, marginY_);
+  paintPageImages();
+  paintClippingHighlights();
+  paintFootnoteMarkers();
+  renderStatusBar();
+  if (mappedInput.needsOnScreenFrontChrome()) {
+    GUI.drawButtonHints(renderer, tr(STR_HOME), tr(STR_MENU), nullptr, nullptr);
+  }
 }
 
 void RivuletReaderActivity::loadProgress(int& outSpine, int& outPage) {

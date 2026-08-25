@@ -11,6 +11,7 @@
 
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
+#include "util/UiGhostPolicy.h"
 
 namespace ReaderUtils {
 
@@ -368,6 +369,7 @@ void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
   renderer.copyGrayscaleMsbBuffers();
 
   renderer.displayGrayBuffer();
+  UiGhostPolicy::noteGreyscaleOnPanel();
   renderer.setRenderMode(GfxRenderer::BW);
 
   renderer.restoreBwBuffer();

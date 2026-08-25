@@ -22,6 +22,7 @@
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
 #include "util/SleepChromeIcon.h"
+#include "util/UiGhostPolicy.h"
 
 namespace {
 // Temp 2-bit BMP written when painting a PNG sleep image (reuses BMP greyscale path).
@@ -430,8 +431,16 @@ void SleepActivity::renderLastScreenSleepScreen() const {
   // Both devices: differential FAST only (moon ink delta) — no HALF scrub flash.
   // Do not use displayGrayscaleBase here: AA-pre-BW mid is greyscale preconditioning
   // and leaves white muddy when no grey planes follow (v0.1.3 used plain FAST).
+  // Clock AA / reader AA leave greyscale on glass with a restored BW framebuffer.
+  // FAST then diffs those planes into a black/messed sleep image. HALF first when
+  // greys are on the panel so the moon overlay matches the glass. Pure BW last-frame
+  // stays differential FAST.
   SleepChromeIcon::drawAtTopChrome(renderer, MoonIcon, MOONICON_WIDTH, MOONICON_HEIGHT);
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  if (UiGhostPolicy::panelHoldsGreyscale()) {
+    UiGhostPolicy::displayHalf(renderer);
+  } else {
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
 }
 
 void SleepActivity::renderBlankSleepScreen() const {

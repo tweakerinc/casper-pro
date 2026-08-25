@@ -56,6 +56,13 @@ class HomeActivity final : public Activity {
   // so Back→Home is ~0.4s not ~2s of multipass. Timer armed after FAST paints.
   bool deferredHalfScrubOnly = false;
   unsigned long deferredHalfScrubAtMs = 0;
+  // Clock AA is a full-frame greyscale pass. Run it only after this idle window
+  // so Read / Settings can cancel it first (and so wake is not stuck on AA).
+  static constexpr unsigned long kClockAaIdleMs = 400;
+  bool pendingClockAaAfterIdle_ = false;
+  unsigned long lastHomeInputMs_ = 0;
+  // Minute tick: BW window only. Unchanged digits keep the last AA raster.
+  bool forcePenumbraClockBwOnly_ = false;
   // Soft FAST grayscale base (panel already shows matching BW shell).
   bool softGrayscaleBase = false;
   // Abort in-flight multipass between stages (Recents/Settings must not freeze
@@ -81,6 +88,9 @@ class HomeActivity final : public Activity {
   bool menuLongPressFired = false;
   // Stats: side Left/Right toggled under-box title ↔ lifetime.
   bool forceStatsUnderBoxRepaint = false;
+  // First Home/resume paint: skip the full-screen clock greys so the shell
+  // lands FAST. Idle loop runs clock AA after that (X3).
+  bool deferScrubAfterFirstPaint_ = false;
   // Penumbra (X3): windowed digit-only (or clock-block) refresh — no full-frame flash.
   bool forcePenumbraClockRepaint = false;
   // Last hero time string drawn on panel ("H:MM"); used for minute-change detect.
@@ -105,10 +115,10 @@ class HomeActivity final : public Activity {
   bool forceHomeShellRepaint = false;
   // seedUnderReader: defer loadRecentBooks / stats until first onResume.
   bool deferredEnterLoad_ = false;
-  // After QR seed: first shell paint must be FAST (not FULL) so deep-sleep BUSY
-  // cannot hang the render task with moon still on glass. Deferred FULL cleans later.
-  bool softQrFirstPaint_ = false;
-  unsigned long deferredHardScrubAtMs_ = 0;
+  // Light UI child (book action sheet / Settings / Library) did not change
+  // recents. onResume skips the SD cluster before first ink. Cleared when
+  // opening a book or after a mutating book action (those already reloaded).
+  bool skipResumeSdReload_ = false;
   int minimalMenuIndex = 0;
   uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image
   size_t coverBufferSize = 0;      // Bytes allocated to coverBuffer

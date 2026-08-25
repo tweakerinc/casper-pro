@@ -29,6 +29,9 @@ class RivuletReaderActivity final : public Activity {
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return true; }
   void persistProgressForSleep() override;
+  // Rewrite the current page into the FB without a panel refresh so QR sleep
+  // diffs the page that is actually on glass (glyph scan can leave FB white).
+  void paintCurrentPageToFramebuffer();
   bool handleForcedRefresh() override;
   bool handleMenuGesture() override;
   // Home pad on the book page: save + leave (not a no-op under hierarchical Home).

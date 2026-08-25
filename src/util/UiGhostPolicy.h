@@ -27,9 +27,16 @@ inline bool& hardScrubArmed() {
   static bool armed = false;
   return armed;
 }
+inline bool& greyscaleOnPanel() {
+  static bool greys = false;
+  return greys;
+}
 }  // namespace detail
 
-inline void noteHalf() { detail::hardScrubArmed() = false; }
+inline void noteHalf() {
+  detail::hardScrubArmed() = false;
+  detail::greyscaleOnPanel() = false;
+}
 
 inline void requestHardScrub() { detail::hardScrubArmed() = true; }
 
@@ -37,23 +44,20 @@ inline void clearHardScrub() { detail::hardScrubArmed() = false; }
 
 inline bool hardScrubArmed() { return detail::hardScrubArmed(); }
 
-// Hard clean — X3 HALF (+ resync in HalDisplay). Force Refresh / home scrub.
+// Clock AA / reader AA leave greyscale on glass while FB is restored BW.
+// QR sleep FAST then diffs the two planes into a black/messed frame.
+inline void noteGreyscaleOnPanel() { detail::greyscaleOnPanel() = true; }
+inline bool panelHoldsGreyscale() { return detail::greyscaleOnPanel(); }
+
+// Hard clean — HALF. Force Refresh / intentional home scrub only.
+// Do not FULL after deep sleep: UC8179/SSD1677 BUSY can hang for tens of seconds
+// (serial up, moon/home frozen, touch dead until the wait times out).
 inline void displayHalf(const GfxRenderer& renderer) {
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   noteHalf();
 }
 
-// Strongest plate clean for residual after freezes / dense reader ink.
-// X4 Pro SSD1677 HALF is a soft GC and often leaves ghosting; use FULL there.
-// X3 keeps HALF+resync (already the quality path).
-inline void displayHardScrub(const GfxRenderer& renderer) {
-  if (gpio.deviceIsX3()) {
-    displayHalf(renderer);
-  } else {
-    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
-    noteHalf();
-  }
-}
+inline void displayHardScrub(const GfxRenderer& renderer) { displayHalf(renderer); }
 
 // X3 soft B/W reinforce only (OEM AA-pre-BW mid). No strong plate first.
 // Prefer displaySoftOpen for full-screen swaps over home.
@@ -90,9 +94,7 @@ inline void displayMenuFrame(const GfxRenderer& renderer) {
 }
 
 // First full-frame open (library, recents, etc.).
-inline void displayFastFull(const GfxRenderer& renderer) {
-  displaySoftOpen(renderer, /*softCount=*/1);
-}
+inline void displayFastFull(const GfxRenderer& renderer) { displaySoftOpen(renderer, /*softCount=*/1); }
 
 // Menu cursor / band: always plain FAST. Never soft, never HALF.
 inline void displayMenuBand(const GfxRenderer& renderer, int x, int y, int w, int h) {
@@ -119,12 +121,6 @@ inline bool sameListPage(int indexA, int indexB, int pageItems) {
 }
 
 inline void displayHomeUnderUpdate(const GfxRenderer& renderer, int winX, int winY, int winW, int winH) {
-  // Prefer full FAST when a hard scrub is still armed (resume race) so windowed
-  // under-panel updates cannot leave reader residual on X4 Pro / UC8179.
-  if (detail::hardScrubArmed()) {
-    displayHalf(renderer);
-    return;
-  }
   if (gpio.deviceIsX3()) {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {

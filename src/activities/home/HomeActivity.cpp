@@ -98,6 +98,15 @@ bool isAnyFrontButtonPressed(const MappedInputManager& mappedInput) {
          mappedInput.isFrontButtonPressed(HalGPIO::BTN_LEFT) || mappedInput.isFrontButtonPressed(HalGPIO::BTN_RIGHT);
 }
 
+bool homeControlsHeld(const MappedInputManager& mappedInput) {
+  return isAnyFrontButtonPressed(mappedInput) || mappedInput.isPressed(MappedInputManager::Button::Back) ||
+         mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+         mappedInput.isPressed(MappedInputManager::Button::Left) ||
+         mappedInput.isPressed(MappedInputManager::Button::Right) ||
+         mappedInput.isPressed(MappedInputManager::Button::Up) ||
+         mappedInput.isPressed(MappedInputManager::Button::Down);
+}
+
 // Popup menu: Dashboard BACK (Menu) / Bare CONFIRM (Menu).
 // Settings is always in the Menu list (front bar is Menu · Library · Recents · Read).
 // Recents is a front button — not duplicated in the popup menu.
@@ -510,8 +519,11 @@ void HomeActivity::onEnter() {
   backPressSeen = false;
   backResumeArmed = false;
   minimalMenuIndex = 0;
-  // Cold/first Home: HALF scrub (boot logo residual / first shell).
-  UiGhostPolicy::requestHardScrub();
+  // Cold/first Home: FAST over splash / retained sleep frame. A FULL after
+  // deep sleep hangs UC8179 BUSY (serial up, home frozen). Clock AA waits for idle.
+  UiGhostPolicy::clearHardScrub();
+  deferScrubAfterFirstPaint_ = true;
+  lastHomeInputMs_ = millis();
   // Allow cover pass to run again after leaving reader / changing theme.
   // Clear settled multipass so a theme switch always redraws and re-multipasses.
   freeCoverBuffer();
@@ -558,10 +570,14 @@ void HomeActivity::onEnter() {
 
   // Phase 1 (A1): when hero thumbs already exist (typical goHome after reading),
   // bind paths now so the first paint multipasses with real art — no shell-only HALF.
+  // Penumbra is text-only: constructing an Epub per recent is dead SD work and
+  // stalls first ink after sleep wake (serial up, home unresponsive).
   {
     const int heroH = homeHeroThumbHeight(renderer, metrics.homeCoverHeight);
     const bool shelfTheme = isDashboardRecentsTheme();
-    if (bindExistingHeroThumbsIfReady(recentBooks, heroH, shelfTheme, HomeCoverMetrics::homeShelfThumbHeight)) {
+    if (isPenumbraTheme()) {
+      recentsLoaded = true;
+    } else if (bindExistingHeroThumbsIfReady(recentBooks, heroH, shelfTheme, HomeCoverMetrics::homeShelfThumbHeight)) {
       recentsLoaded = true;
       LOG_DBG("HOME", "Hero thumbs ready — multipass on first paint (skip shell HALF)");
     }
@@ -574,6 +590,8 @@ void HomeActivity::onEnter() {
 void HomeActivity::onExit() {
   Activity::onExit();
   deferredHalfScrubOnly = false;
+  pendingClockAaAfterIdle_ = false;
+  forcePenumbraClockBwOnly_ = false;
 
   // Free the stored cover buffer if any
   freeCoverBuffer();
@@ -582,25 +600,30 @@ void HomeActivity::onExit() {
 
 void HomeActivity::markSnappyResumeReady() {
   // Used when Home is seeded under the reader without a first paint (QR/cold open).
-  // Do NOT claim the panel is clean — first onResume must hard-scrub reader residual
-  // (Penumbra used to set penumbraHalfBaselineDone/coverGrayOnPanel and FAST-over-book
-  // left dense ghosting: full reader page visible under the clock).
-  homeUiReady = false;
-  recentsLoaded = false;
-  paintedUiTheme = -1;
-  coverRendered = false;
-  coverGrayOnPanel = false;
-  penumbraHalfBaselineDone = false;
-  leaveForUiChildSnappy = false;
-  forceHomeShellRepaint = true;
+  paintedUiTheme = static_cast<int>(SETTINGS.uiTheme);
+  homeUiReady = true;
+  recentsLoaded = true;
+  if (isPenumbraTheme()) {
+    // Text-only: FAST resume is correct (no cover greys to restore).
+    penumbraHalfBaselineDone = true;
+    leaveForUiChildSnappy = true;
+    coverGrayOnPanel = true;
+  } else if (usesHomeCoverMultipass()) {
+    // Bare / Dashboard / Focus: first PopToHome must run perfect multipass greys.
+    leaveForUiChildSnappy = false;
+    coverGrayOnPanel = false;
+    coverRendered = false;
+    penumbraHalfBaselineDone = false;
+  } else {
+    leaveForUiChildSnappy = true;
+    coverGrayOnPanel = false;
+  }
 }
 
 void HomeActivity::seedUnderReader() {
   // QR critical path: do not touch SD or request paint. Back from book runs
   // onResume → full enter load once RECENT_BOOKS (etc.) are available.
   deferredEnterLoad_ = true;
-  softQrFirstPaint_ = true;  // first paint after QR: FAST, then deferred hard scrub
-  deferredHardScrubAtMs_ = 0;
   minimalMenuOpen = false;
   homeMenuShellOnPanel = false;
   markSnappyResumeReady();
@@ -611,13 +634,13 @@ void HomeActivity::seedUnderReader() {
 }
 
 void HomeActivity::onResume() {
-  // Back from reader / settings / library / menu: hard HALF on first home paint so
-  // residual from soft FAST children is scrubbed. One intentional flash; panel looks clean.
-  // Cover themes may still defer greys after the BW shell.
+  // Back from reader / settings / library / menu.
   Activity::onResume();
 
+  bool justLoadedDeferredEnter = false;
   if (deferredEnterLoad_) {
     deferredEnterLoad_ = false;
+    justLoadedDeferredEnter = true;
     // Same data load as onEnter, without re-arming a second cold boot scrub race.
     hasOpdsServers = OPDS_STORE.hasServers();
     const auto& metrics = UITheme::getInstance().getMetrics();
@@ -640,12 +663,18 @@ void HomeActivity::onResume() {
     }
     const int heroH = homeHeroThumbHeight(renderer, metrics.homeCoverHeight);
     const bool shelfTheme = isDashboardRecentsTheme();
-    if (bindExistingHeroThumbsIfReady(recentBooks, heroH, shelfTheme, HomeCoverMetrics::homeShelfThumbHeight)) {
+    if (isPenumbraTheme()) {
+      recentsLoaded = true;
+    } else if (bindExistingHeroThumbsIfReady(recentBooks, heroH, shelfTheme, HomeCoverMetrics::homeShelfThumbHeight)) {
       recentsLoaded = true;
     }
     homeUiReady = true;
   }
 
+  // Capture the snappy-return hint BEFORE clearing it. This flag was written in
+  // five places and never read — so every return to Home armed a hard scrub and
+  // paid a full FULL/HALF wait, even coming back from a light chrome child.
+  const bool snappyReturnFromUiChild = leaveForUiChildSnappy;
   leaveForUiChildSnappy = false;
 
   freeCoverBufferRamOnly();
@@ -661,6 +690,9 @@ void HomeActivity::onResume() {
   coverGrayRetryAtMs = 0;
   deferredHalfScrubOnly = false;
   deferredHalfScrubAtMs = 0;
+  pendingClockAaAfterIdle_ = false;
+  forcePenumbraClockBwOnly_ = false;
+  lastHomeInputMs_ = millis();
   deferredGreysOnly = false;
   softGrayscaleBase = false;
   recentsLoading = false;
@@ -676,8 +708,20 @@ void HomeActivity::onResume() {
   backResumeArmed = false;
   minimalSuppressInitialFrontRelease = usesMinimalHomeInteraction();
   penumbraHalfBaselineDone = false;
-  forceHomeShellRepaint = true;  // never settle-skip over reader residual
-  UiGhostPolicy::requestHardScrub();
+  // Reader → Home genuinely needs a HALF: a dense book page ghosts badly and a
+  // FAST pass settles that residual into the panel. A light UI child (book action
+  // sheet, settings, menus) leaves almost nothing to scrub, so it gets a FAST
+  // paint. Never FULL: after deep sleep that hangs BUSY on X4 Pro.
+  if (snappyReturnFromUiChild) {
+    UiGhostPolicy::clearHardScrub();
+    deferScrubAfterFirstPaint_ = true;
+    cancelBackgroundPaint = false;
+    SystemLog::logTiming("HOME", "resume snappy (light UI child) — FAST paint");
+  } else {
+    UiGhostPolicy::requestHardScrub();
+    deferScrubAfterFirstPaint_ = true;
+    cancelBackgroundPaint = false;
+  }
   suppressMenuBackUntilMs = millis() + 900UL;
   // Cover themes: multipass greys on the *first* home paint when thumbs exist
   // (one HALF greys-base). Deferred "shell HALF → wait → greys HALF" felt like
@@ -685,9 +729,18 @@ void HomeActivity::onResume() {
   snappyResumeNoGreys = false;
   paintedUiTheme = -1;
   coverRendered = false;
+  forceHomeShellRepaint = true;  // never settle-skip over reader residual
 
   // Portrait: reader may have left landscape.
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+
+  const bool skipSdReload = justLoadedDeferredEnter || skipResumeSdReload_;
+  skipResumeSdReload_ = false;
+  if (skipSdReload) {
+    if (isPenumbraTheme()) recentsLoaded = true;
+    LOG_DBG("HOME", "onResume: skip SD reload (RAM recents still valid)");
+    return;
+  }
 
   hasOpdsServers = OPDS_STORE.hasServers();
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -716,14 +769,19 @@ void HomeActivity::onResume() {
     globalStats = GlobalReadingStats{};
   }
 
+  // Penumbra paints no cover art, so probing hero thumbs is pure dead work — it
+  // constructs an Epub per recent book (SD open + parse each) on the return-to-home
+  // path, which is a large part of the "nothing happens" before the paint.
   const int heroH = homeHeroThumbHeight(renderer, metrics.homeCoverHeight);
-  if (bindExistingHeroThumbsIfReady(recentBooks, heroH, isDashboardRecentsTheme(),
-                                    HomeCoverMetrics::homeShelfThumbHeight)) {
+  if (isPenumbraTheme()) {
+    recentsLoaded = true;
+    LOG_DBG("HOME", "onResume: penumbra text home — no thumb probe");
+  } else if (bindExistingHeroThumbsIfReady(recentBooks, heroH, isDashboardRecentsTheme(),
+                                           HomeCoverMetrics::homeShelfThumbHeight)) {
     recentsLoaded = true;
     LOG_DBG("HOME", "onResume: thumbs ready — HALF shell then multipass");
-  } else if (isPenumbraTheme() || !usesHomeCoverMultipass()) {
+  } else if (!usesHomeCoverMultipass()) {
     recentsLoaded = true;
-    // First paint honors hardScrubArmed → HALF (baseline set after that paint).
     LOG_DBG("HOME", "onResume: text home — HALF scrub on first paint");
   } else {
     recentsLoaded = false;
@@ -1052,6 +1110,7 @@ void HomeActivity::markLeavingForUiChild() {
   // Penumbra is text-only (no cover greys). Other themes need settled multipass greys.
   const bool themeOk = paintedUiTheme == static_cast<int>(SETTINGS.uiTheme);
   leaveForUiChildSnappy = themeOk && (isPenumbraTheme() ? penumbraHalfBaselineDone : coverGrayOnPanel);
+  skipResumeSdReload_ = recentsLoaded;
   cancelHomeBackgroundPaint();
 }
 
@@ -1059,8 +1118,20 @@ void HomeActivity::cancelHomeBackgroundPaint() {
   // Drop deferred greys / deferred HALF so we do not flash after leaving Home.
   coverGrayNeedsRetry = false;
   deferredGreysOnly = false;
+  // A pending HALF means the panel is still holding a FAST-only paint over
+  // whatever was there before (a dense book page, typically). Cancelling it
+  // without re-arming left that residual on glass. Hand the scrub back to
+  // whoever paints next.
+  if (deferredHalfScrubOnly) {
+    UiGhostPolicy::requestHardScrub();
+    penumbraHalfBaselineDone = false;
+  }
   deferredHalfScrubOnly = false;
   softGrayscaleBase = false;
+  forcePenumbraClockRepaint = false;
+  forcePenumbraClockBwOnly_ = false;
+  pendingClockAaAfterIdle_ = false;
+  forceStatsUnderBoxRepaint = false;
   // Abort multipass between stages (checked in multipassHomeCoverGrayscale).
   cancelBackgroundPaint = true;
 }
@@ -1082,34 +1153,23 @@ bool HomeActivity::handleForcedRefresh() {
   softGrayscaleBase = false;
   cancelBackgroundPaint = false;
   coverGrayNeedsRetry = false;
+  pendingClockAaAfterIdle_ = false;
+  forcePenumbraClockBwOnly_ = false;
   UiGhostPolicy::requestHardScrub();
-  SystemLog::logTiming("HOME", "force_refresh (hard scrub)");
+  SystemLog::logTiming("HOME", "force_refresh (hard HALF scrub)");
   requestUpdateAndWait();
-  // Pro: paint may have used FULL already via hardScrubArmed; if residual remains
-  // from a stuck popup path, one more hard scrub with the final FB is cheap insurance.
-  if (!gpio.deviceIsX3()) {
-    RenderLock lock(*this);
-    UiGhostPolicy::displayHardScrub(renderer);
-  }
   return true;
 }
 
 void HomeActivity::loop() {
-  // Deferred FULL after QR soft first paint (panel already interactive).
-  if (deferredHardScrubAtMs_ != 0 && static_cast<long>(millis() - deferredHardScrubAtMs_) >= 0) {
-    deferredHardScrubAtMs_ = 0;
-    if (!gpio.deviceIsX3()) {
-      RenderLock lock(*this);
-      UiGhostPolicy::displayHardScrub(renderer);
-      SystemLog::logTiming("HOME", "deferred FULL scrub after QR");
-    }
-  }
   // Home menu owns the panel — do not gen covers, multipass greys, or partial
   // home updates under it. (Deferred greys used to requestUpdate() even when
   // the menu was open; residual of home through a FAST menu plate looked like
   // home repainting behind the menu.)
   if (minimalMenuOpen) {
     forcePenumbraClockRepaint = false;
+    forcePenumbraClockBwOnly_ = false;
+    pendingClockAaAfterIdle_ = false;
     forceStatsUnderBoxRepaint = false;
     deferredHalfScrubOnly = false;
     // Leave coverNeedsRetry / coverGrayNeedsRetry armed for after menu dismiss.
@@ -1118,7 +1178,13 @@ void HomeActivity::loop() {
     // without a full redraw so first ink stayed snappy.
     if (deferredHalfScrubOnly && static_cast<long>(millis() - deferredHalfScrubAtMs) >= 0) {
       deferredHalfScrubOnly = false;
-      if (!RenderLock::peek() && !activityManager.hasPendingActivityChange()) {
+      if (homeControlsHeld(mappedInput)) {
+        lastHomeInputMs_ = millis();
+        deferredHalfScrubOnly = true;
+        deferredHalfScrubAtMs = millis() + 100UL;
+        return;
+      }
+      if (!RenderLock::peek() && !activityManager.hasPendingActivityChange() && !cancelBackgroundPaint) {
         RenderLock lock;
         if (activityManager.isCurrentActivity(this) && !minimalMenuOpen) {
           UiGhostPolicy::displayHalf(renderer);
@@ -1132,15 +1198,29 @@ void HomeActivity::loop() {
       }
       return;
     }
+    // Full-frame clock AA after the shell is on glass — never while a button is
+    // held and never before HALF. X3 only: Pro clock AA is a multi-second stall.
+    if (pendingClockAaAfterIdle_ && !deferredHalfScrubOnly) {
+      if (homeControlsHeld(mappedInput)) {
+        lastHomeInputMs_ = millis();
+      } else if (static_cast<long>(millis() - lastHomeInputMs_) >= static_cast<long>(kClockAaIdleMs) &&
+                 !RenderLock::peek() && !activityManager.hasPendingActivityChange() && !cancelBackgroundPaint) {
+        pendingClockAaAfterIdle_ = false;
+        if (gpio.deviceIsX3()) {
+          forcePenumbraClockRepaint = true;
+          requestUpdate();
+          return;
+        }
+      }
+    }
     // Penumbra clock face: live minute tick while idle on home.
-    // Stacked activities never call this loop. Only the changing digits are
-    // dirtied in redrawClockBlock (tight windowed refresh).
+    // BW window only — greyscale AA here is a full-frame pass.
     if (isPenumbraTheme() && PenumbraThemeUi::usesClockFace() && !forcePenumbraClockRepaint &&
-        !deferredHalfScrubOnly) {
+        !forcePenumbraClockBwOnly_ && !deferredHalfScrubOnly && !pendingClockAaAfterIdle_) {
       char now[8];
       PenumbraThemeUi::formatHeroTimeNow(now, sizeof(now));
       if (now[0] != '\0' && (penumbraLastDrawnTime[0] == '\0' || strcmp(now, penumbraLastDrawnTime) != 0)) {
-        forcePenumbraClockRepaint = true;
+        forcePenumbraClockBwOnly_ = true;
         requestUpdate();
         return;
       }
@@ -1818,11 +1898,14 @@ void HomeActivity::render(RenderLock&& lock) {
     // Partial updates (side L/R / Recents Down) — never while menu owns the panel.
     if (minimalMenuOpen) {
       forcePenumbraClockRepaint = false;
+      forcePenumbraClockBwOnly_ = false;
       forceStatsUnderBoxRepaint = false;
     }
-    const bool clockDirty = !minimalMenuOpen && forcePenumbraClockRepaint;
+    const bool clockBwOnly = !minimalMenuOpen && forcePenumbraClockBwOnly_;
+    const bool clockDirty = !minimalMenuOpen && (forcePenumbraClockRepaint || forcePenumbraClockBwOnly_);
     const bool underDirty = !minimalMenuOpen && forceStatsUnderBoxRepaint;
     forcePenumbraClockRepaint = false;
+    forcePenumbraClockBwOnly_ = false;
     forceStatsUnderBoxRepaint = false;
 
     if ((clockDirty || underDirty) && paintedUiTheme == clockTheme && coverRendered) {
@@ -1883,7 +1966,8 @@ void HomeActivity::render(RenderLock&& lock) {
           // AA is multi-hundred ms and blocked waitForRenderIdle.
           const bool leave =
               cancelBackgroundPaint || activityManager.hasPendingActivityChange();
-          if (!leave &&
+          // Minute ticks and Pro: BW window only. Full-frame clock AA stalls wake.
+          if (!leave && !clockBwOnly && gpio.deviceIsX3() &&
               PenumbraThemeUi::displayClockAntiAliased(renderer, static_cast<int>(HalDisplay::FAST_REFRESH),
                                                       &dirty)) {
             // AA ok
@@ -1962,49 +2046,31 @@ void HomeActivity::render(RenderLock&& lock) {
     snappyResumeNoGreys = false;
     deferredHalfScrubOnly = false;
     const uint32_t tPenumbra = millis();
-    // Back→Home arms hard scrub in onResume → full-panel HALF clears reader residual.
-    // Do NOT use greyscale clock multipass as the sole open path on X4 Pro: that only
-    // greys the clock band and leaves heavy ghosting from the book page.
-    // X3 may still polish the 72pt clock with AA after a clean HALF.
+    // Back→Home may arm hard scrub in onResume → HALF cleans residual. Other full
+    // paints stay FAST when scrub is not armed. Never FULL: after deep sleep that
+    // hangs UC8179 BUSY (serial up, home frozen, touch dead).
     const bool hard = UiGhostPolicy::hardScrubArmed();
-    // X4 Pro SSD1677 HALF is a soft GC vs dense reader BW — leave-book residual
-    // (screenshot: full page under clock) needs a true full waveform once.
-    const bool proFullScrub = hard && !gpio.deviceIsX3();
-    SystemLog::logTiming("HOME", "penumbra_full pre_disp mode=%s theme=%u fre=%u",
-                         proFullScrub ? "FULL" : (hard ? "HALF" : "FAST"),
+    const bool deferClockAa = deferScrubAfterFirstPaint_;
+    deferScrubAfterFirstPaint_ = false;
+    SystemLog::logTiming("HOME", "penumbra_full pre_disp mode=%s theme=%u fre=%u", hard ? "HALF" : "FAST",
                          static_cast<unsigned>(SETTINGS.uiTheme), static_cast<unsigned>(ESP.getFreeHeap()));
     const bool leave = cancelBackgroundPaint || activityManager.hasPendingActivityChange();
-    if (hard) {
-      if (proFullScrub && softQrFirstPaint_) {
-        // QR wake: never block the render task on FULL right after deep sleep
-        // (BUSY hang = moon stuck + light on + non-responsive). Soft open first.
-        softQrFirstPaint_ = false;
-        UiGhostPolicy::clearHardScrub();
-        UiGhostPolicy::displayFastFull(renderer);
-        deferredHardScrubAtMs_ = millis() + 500UL;
-        SystemLog::logTiming("HOME", "QR soft first paint; defer FULL scrub");
-      } else if (proFullScrub) {
-        UiGhostPolicy::displayHardScrub(renderer);
-      } else {
-        UiGhostPolicy::displayHalf(renderer);
-      }
+    if (!leave && gpio.deviceIsX3() && !deferClockAa &&
+        PenumbraThemeUi::displayClockAntiAliased(renderer, hard ? static_cast<int>(HalDisplay::HALF_REFRESH)
+                                                               : static_cast<int>(HalDisplay::FAST_REFRESH),
+                                                /*dirtyOverride=*/nullptr)) {
+      if (hard) UiGhostPolicy::noteHalf();
       penumbraHalfBaselineDone = true;
-      // Optional X3-only AA polish on the clock digits (soft bank). Pro: scrub is enough.
-      if (!leave && PenumbraThemeUi::usesClockFace() && gpio.deviceIsX3()) {
-        (void)PenumbraThemeUi::displayClockAntiAliased(renderer, static_cast<int>(HalDisplay::FAST_REFRESH),
-                                                       /*dirtyOverride=*/nullptr);
-      }
-      SystemLog::logTimed("HOME", millis() - tPenumbra, "penumbra_full mode=%s theme=%u fre=%u",
-                          proFullScrub ? "FULL" : "HALF", static_cast<unsigned>(SETTINGS.uiTheme),
+      SystemLog::logTimed("HOME", millis() - tPenumbra, "penumbra_full mode=%s+clockAA theme=%u fre=%u",
+                          hard ? "HALF" : "FAST", static_cast<unsigned>(SETTINGS.uiTheme),
                           static_cast<unsigned>(ESP.getFreeHeap()));
-    } else if (!leave && PenumbraThemeUi::usesClockFace() && gpio.deviceIsX3() &&
-               PenumbraThemeUi::displayClockAntiAliased(renderer, static_cast<int>(HalDisplay::FAST_REFRESH),
-                                                       /*dirtyOverride=*/nullptr)) {
+    } else if (hard) {
+      UiGhostPolicy::displayHalf(renderer);
       penumbraHalfBaselineDone = true;
-      SystemLog::logTimed("HOME", millis() - tPenumbra, "penumbra_full mode=FAST+clockAA theme=%u fre=%u",
-                          static_cast<unsigned>(SETTINGS.uiTheme), static_cast<unsigned>(ESP.getFreeHeap()));
+      SystemLog::logTimed("HOME", millis() - tPenumbra, "penumbra_full mode=HALF%s theme=%u fre=%u",
+                          deferClockAa ? "+deferAA" : "", static_cast<unsigned>(SETTINGS.uiTheme),
+                          static_cast<unsigned>(ESP.getFreeHeap()));
     } else {
-      // Pro idle open / non-AA: full FAST (softCount settle on X3 only via policy).
       UiGhostPolicy::displayFastFull(renderer);
       penumbraHalfBaselineDone = true;
       SystemLog::logTimed("HOME", millis() - tPenumbra, "penumbra_full mode=FAST theme=%u fre=%u",
@@ -2015,7 +2081,12 @@ void HomeActivity::render(RenderLock&& lock) {
     recentsLoaded = true;
     homeUiReady = true;
     PenumbraThemeUi::formatHeroTimeNow(penumbraLastDrawnTime, sizeof(penumbraLastDrawnTime));
-    forcePenumbraClockRepaint = false;
+    if (deferClockAa && gpio.deviceIsX3()) {
+      pendingClockAaAfterIdle_ = true;
+      lastHomeInputMs_ = millis();
+    } else {
+      forcePenumbraClockRepaint = false;
+    }
     return;
   }
 
@@ -2352,6 +2423,7 @@ void HomeActivity::reloadHomeAfterBookAction() {
   coverNeedsRetry = false;
   coverGenAttempts = 0;
   coverRetryAtMs = 0;
+  skipResumeSdReload_ = true;  // this method already reloaded; onResume must not
   requestUpdate();
 }
 

@@ -130,9 +130,9 @@ static bool handleGlobalPowerButtonAction(const CasperSettings::SHORT_PWRBTN act
       // Always arm hard scrub so activity paints take the quality path.
       UiGhostPolicy::requestHardScrub();
       if (!activityManager.handleForcedRefresh()) {
-        // No activity override: scrub whatever is currently in the FB.
+        // No activity override: HALF-scrub whatever is currently in the FB.
         RenderLock lock;
-        UiGhostPolicy::displayHardScrub(renderer);
+        UiGhostPolicy::displayHalf(renderer);
       }
       // Action is latched; release power anytime — do not require holding through scrub.
       return true;
@@ -362,22 +362,25 @@ void enterDeepSleep(bool fromTimeout, bool powerQuickResume) {
     APP_STATE.readerActivityLoadCount = 0;
   }
 
-  // Instant feedback: moon on the retained page *before* heavy SD / teardown so
-  // the user sees the device reacted the moment they pressed power.
+  // Instant feedback: moon on glass so the power press registers before the
+  // multi-second sleep teardown. Windowed on Pro; skip FAST when greys are on
+  // glass (FAST diffs greys into a black frame). SleepActivity HALF-syncs once.
   if (isQuickResumeSleep) {
-    // System-wide: keep invertOnDisplay so light paint-space FB stays dark on glass.
-    // Reader-only: FB is light; temporary invert so the moon lands on a dark page
-    // without permanently flipping bits (home must stay light paint-space).
     const bool sysWideDark = SETTINGS.readerDarkMode != 0 && SETTINGS.darkModeReaderOnly == 0;
     const bool readerOnlyDark = SETTINGS.readerDarkMode != 0 && SETTINGS.darkModeReaderOnly != 0;
     renderer.setInvertOnDisplay(sysWideDark);
     SleepChromeIcon::drawAtTopChrome(renderer, MoonIcon, MOONICON_WIDTH, MOONICON_HEIGHT);
-    if (readerOnlyDark && APP_STATE.lastSleepFromReader) {
-      renderer.invertScreen();
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-      renderer.invertScreen();
-    } else {
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    const int moonX = SleepChromeIcon::leftX(renderer);
+    const int moonY = SleepChromeIcon::topY(renderer);
+    const int moonSize = SleepChromeIcon::iconSize(renderer);
+    if (!UiGhostPolicy::panelHoldsGreyscale()) {
+      if (readerOnlyDark && APP_STATE.lastSleepFromReader) {
+        renderer.invertScreen();
+        UiGhostPolicy::displayPartialOrSoft(renderer, moonX, moonY, moonSize, moonSize);
+        renderer.invertScreen();
+      } else {
+        UiGhostPolicy::displayPartialOrSoft(renderer, moonX, moonY, moonSize, moonSize);
+      }
     }
   }
 
@@ -715,23 +718,25 @@ void setup() {
         if (QrTimingLog::active()) QrTimingLog::line("after loadSleepFrameBuffer");
         // Re-seed controller "previous" plane from the restored FB (X3 DTM1 / X4 RED).
         renderer.cleanupGrayscaleWithFrameBuffer();
-        // QR→book: keep moon/page on glass — do NOT FAST the panel before first
-        // ink (was a full ~0.5–1s X3 wait on every wake vs 0.1.5). First page
-        // paint replaces the frame. Non-book wakes still show moon→dots feedback.
-        if (!qrOpenBook) {
+        // Moon → dots on every wake, including QR→book. Skipping this left the
+        // moon frozen on glass with no sign the press registered.
+        {
           const bool readerOnlyDarkWake =
               SETTINGS.readerDarkMode != 0 && SETTINGS.darkModeReaderOnly != 0;
           SleepChromeIcon::replaceAtTopChrome(renderer, LoadingIcon, LOADINGICON_WIDTH, LOADINGICON_HEIGHT);
+          const int dotsX = SleepChromeIcon::leftX(renderer);
+          const int dotsY = SleepChromeIcon::topY(renderer);
+          const int dotsSize = SleepChromeIcon::iconSize(renderer);
           if (readerOnlyDarkWake) {
             renderer.invertScreen();
-            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            UiGhostPolicy::displayPartialOrSoft(renderer, dotsX, dotsY, dotsSize, dotsSize);
             renderer.invertScreen();
           } else {
-            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            UiGhostPolicy::displayPartialOrSoft(renderer, dotsX, dotsY, dotsSize, dotsSize);
           }
-          if (QrTimingLog::active()) QrTimingLog::line("after moon→dots (non-book QR)");
-        } else if (QrTimingLog::active()) {
-          QrTimingLog::line("QR→book: skip pre-ink panel FAST (glass kept)");
+          if (QrTimingLog::active()) {
+            QrTimingLog::line("after moon→dots (openBook=%d)", qrOpenBook ? 1 : 0);
+          }
         }
       } else {
         // Never show BootActivity here — glass already holds wallpaper/moon through
