@@ -338,8 +338,7 @@ ContentBand layoutContentBand(const GfxRenderer& renderer) {
   const auto& metrics = PenumbraMetrics::values;
   const int footerH = metrics.buttonHintsHeight;
   b.centerX = pageW / 2;
-  const bool hasChrome = SETTINGS.systemStatusBarHas(CasperSettings::SYS_SLOT_BATTERY) ||
-                         SETTINGS.systemStatusBarHas(CasperSettings::SYS_SLOT_CLOCK);
+  const bool hasChrome = BaseTheme::systemStatusBarHasLiveChrome();
   b.contentTop =
       hasChrome
           ? (BaseTheme::kTopChromeBatteryY + std::max(metrics.batteryHeight + 8, metrics.statusBarVerticalMargin) + 8)

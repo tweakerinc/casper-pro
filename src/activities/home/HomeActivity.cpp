@@ -1926,8 +1926,7 @@ void HomeActivity::render(RenderLock&& lock) {
 
     homeMenuShellOnPanel = false;
     renderer.clearScreen(0xFF);
-    const bool chromeOnly = SETTINGS.systemStatusBarHas(CasperSettings::SYS_SLOT_BATTERY) ||
-                            SETTINGS.systemStatusBarHas(CasperSettings::SYS_SLOT_CLOCK);
+    const bool chromeOnly = BaseTheme::systemStatusBarHasLiveChrome();
     if (chromeOnly) {
       const int headerH =
           BaseTheme::kTopChromeBatteryY + std::max(metrics.batteryHeight + 8, metrics.statusBarVerticalMargin);
@@ -2079,12 +2078,11 @@ void HomeActivity::render(RenderLock&& lock) {
       bufferRestored = restoreCoverBuffer();
     }
 
-    // Top chrome (battery icon+% / clock). Bare / Penumbra default chrome off;
-    // Stats always draws the status-bar band (same plate packing on X3 + X4).
+    // Top chrome (battery / clock / live Battery Warning). Bare / Penumbra
+    // default battery+clock off; warning still paints when SoC is at threshold.
     const bool textOnlyHome = isBareTheme() || isPenumbraTheme();
-    const bool chromeOnlyMinimal = textOnlyHome && (SETTINGS.systemStatusBarHas(CasperSettings::SYS_SLOT_BATTERY) ||
-                                                    SETTINGS.systemStatusBarHas(CasperSettings::SYS_SLOT_CLOCK));
-    // Bare / Penumbra: header only when the user has enabled battery/clock.
+    const bool chromeOnlyMinimal = textOnlyHome && BaseTheme::systemStatusBarHasLiveChrome();
+    // Bare / Penumbra: header when battery/clock are on, or Charge Soon is live.
     if (!textOnlyHome || chromeOnlyMinimal) {
       const int headerTop = textOnlyHome ? 0 : metrics.topPadding;
       const int headerH =

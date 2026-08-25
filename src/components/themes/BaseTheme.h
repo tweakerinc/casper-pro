@@ -275,11 +275,14 @@ class BaseTheme {
                      bool previewIgnoreBatteryMasterHide = false, const char* previewClockTime = nullptr) const;
   // Top-center clock for reader chrome (X3 RTC). No-op when clock hidden/unavailable.
   void drawTopStatusBarClock(const GfxRenderer& renderer, int topY = -1, const char* previewTime = nullptr) const;
-  // System top chrome (Display → Status Bar): Left / Middle / Right Battery|Clock|Hide.
+  // System top chrome (Display → Status Bar): Left / Middle / Right Battery|Clock|Battery Warning|Hide.
   // previewTime forces a fixed clock string (settings preview).
   // forceBatteryWarningPreview: always show the center Battery Warning sample (Status Bar settings).
   void drawSystemStatusBar(const GfxRenderer& renderer, int topY = -1, const char* previewTime = nullptr,
                            bool forceBatteryWarningPreview = false) const;
+  // Home/Bare/Penumbra: paint the top header when battery/clock are placed, or
+  // when Battery Warning is placed and SoC is at/under the threshold.
+  static bool systemStatusBarHasLiveChrome();
   // Width reserved on one side for title truncation (battery+percent or clock text).
   int systemStatusSideReserve(const GfxRenderer& renderer) const;
   void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;

@@ -37,13 +37,9 @@ constexpr int kMinGapCoverToText = 10;
 constexpr int kTitleMaxLines = 3;  // full-width wrap; long titles must not ellipsize early
 constexpr int kAuthorMaxLines = 2;
 
-bool bareShowsBattery() { return SETTINGS.systemStatusBarHas(CasperSettings::SYS_SLOT_BATTERY); }
-
-bool bareShowsClock() { return SETTINGS.systemStatusBarHas(CasperSettings::SYS_SLOT_CLOCK); }
-
-// Y where content may begin: under optional battery/clock chrome.
+// Y where content may begin: under optional battery/clock/warning chrome.
 int bareContentTopY() {
-  if (!bareShowsBattery() && !bareShowsClock()) {
+  if (!BaseTheme::systemStatusBarHasLiveChrome()) {
     return kTopPadNoChrome;
   }
   // Match HomeActivity bare header height (battery row).
@@ -194,7 +190,7 @@ void BareTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
   const int pageH = renderer.getScreenHeight();
   const auto& metrics = BareMetrics::values;
 
-  // Leave room for battery/clock when the user has them enabled; otherwise a
+  // Leave room for live top chrome (battery/clock/Charge Soon); otherwise a
   // small top pad so the cover sits high but not under the bezel.
   const int contentTop = bareContentTopY();
   const int footerH = metrics.buttonHintsHeight;

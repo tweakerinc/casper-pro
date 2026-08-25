@@ -1516,6 +1516,17 @@ void BaseTheme::drawTopStatusBarClock(const GfxRenderer& renderer, int topY, con
   renderer.drawText(kClockFont, textX, textY, timeText);
 }
 
+bool BaseTheme::systemStatusBarHasLiveChrome() {
+  using S = CasperSettings::SYSTEM_STATUS_SLOT;
+  if (SETTINGS.systemStatusBarHas(S::SYS_SLOT_BATTERY) || SETTINGS.systemStatusBarHas(S::SYS_SLOT_CLOCK)) {
+    return true;
+  }
+  if (!SETTINGS.systemStatusBarHas(S::SYS_SLOT_BATTERY_WARNING)) return false;
+  const int thr = SETTINGS.batteryWarningThresholdPercent();
+  if (thr <= 0) return false;
+  return static_cast<int>(powerManager.getBatteryPercentage()) <= thr;
+}
+
 int BaseTheme::systemStatusSideReserve(const GfxRenderer& renderer) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   int reserve = kTopChromeInsetX + metrics.contentSidePadding;
@@ -1546,7 +1557,11 @@ void BaseTheme::drawSystemStatusBar(const GfxRenderer& renderer, int topY, const
                                    &orientedMarginLeft);
   (void)orientedMarginBottom;
 
-  const int baseTopY = topY >= 0 ? topY : orientedMarginTop + metrics.topPadding;
+  // Callers often pass 0 or metrics.topPadding (5). That sits inside the 9px
+  // portrait bezel, so "Charge Soon" vanished into the unviewable strip. Floor
+  // to viewable top + theme pad so home and the settings preview match.
+  const int chromeFloor = orientedMarginTop + metrics.topPadding;
+  const int baseTopY = topY >= 0 ? std::max(topY, chromeFloor) : chromeFloor;
   const int batteryY = baseTopY + kTopChromeBatteryY;
   const int screenW = renderer.getScreenWidth();
   const int leftX = orientedMarginLeft + kTopChromeInsetX;
