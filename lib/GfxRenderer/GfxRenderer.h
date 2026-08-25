@@ -327,7 +327,7 @@ class GfxRenderer {
   // while the framebuffer is already lent yields an inert loan (nesting-safe).
   class FrameBufferLoan {
    public:
-    explicit FrameBufferLoan(GfxRenderer& renderer);
+    explicit FrameBufferLoan(GfxRenderer& renderer, bool enabled = true);
     ~FrameBufferLoan() { end(); }
     void end();
     FrameBufferLoan(const FrameBufferLoan&) = delete;

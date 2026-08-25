@@ -158,7 +158,8 @@ bool GfxRenderer::restoreFrameBufferAfterBuild() {
   return frameBuffer != nullptr;
 }
 
-GfxRenderer::FrameBufferLoan::FrameBufferLoan(GfxRenderer& renderer) : renderer_(renderer) {
+GfxRenderer::FrameBufferLoan::FrameBufferLoan(GfxRenderer& renderer, bool enabled) : renderer_(renderer) {
+  if (!enabled) return;  // caller's screen still owns the pixels
   // Nesting guard: if the framebuffer is already lent out (an outer loan),
   // stay inert so this end() cannot return storage the outer loan still owns.
   if (!renderer_.hasFrameBuffer()) return;

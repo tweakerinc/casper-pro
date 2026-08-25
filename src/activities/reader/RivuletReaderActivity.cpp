@@ -2011,13 +2011,15 @@ void RivuletReaderActivity::tickIdlePageMap() {
   lastIdleMapMs_ = now;
   if (ESP.getMaxAllocHeap() < 20 * 1024 || ESP.getFreeHeap() < 28 * 1024) return;
 
-  if (!engine_.extendPageMap(renderer, rivulet::RivuletEngine::kIdleMapPagesPerTick)) return;
+  if (!engine_.extendPageMap(renderer, engine_.idleMapPagesThisTick(&renderer))) return;
   pageMapDirty_ = true;
   if (engine_.mapComplete()) {
     persistPageMapIfComplete();
-    // Drop the chapter "~" once — one full refresh, not every idle tick.
     requestUpdate();
+    return;
   }
+  (void)engine_.warmAheadPage(renderer);
+  (void)engine_.warmBehindPage(renderer);
 }
 
 void RivuletReaderActivity::loadCachedBookmarks() {
@@ -2922,7 +2924,7 @@ bool RivuletReaderActivity::turnNext(const int skipPages) {
     // Only leave the chapter when live layout says the chapter is finished.
     // nextPage also fails on mid-chapter layout stuck — advancing the spine
     // there made chapter 1 look like it was only 2–3 pages long.
-    if (!engine_.page().atChapterEnd) {
+    if (engine_.lastTurnFail() == rivulet::RivuletEngine::TurnFail::LayoutFailed || !engine_.page().atChapterEnd) {
       LOG_ERR("RVR", "nextPage stuck mid-chapter spine=%d page=%d known=%d — not advancing spine",
               spineIndex_, engine_.currentPage(), engine_.mapKnownPages());
       // Try one more progressive walk step before giving up on this turn.
@@ -2932,6 +2934,12 @@ bool RivuletReaderActivity::turnNext(const int skipPages) {
       }
       requestUpdate();
       return false;
+    }
+    // Seal this spine's page map BEFORE opening the next file so PageBack from
+    // the next spine can map-hit last page.
+    if (engine_.sealMapAtChapterEnd()) {
+      pageMapDirty_ = true;
+      persistPageMapIfComplete();
     }
     // Advance spine
     const int n = epub_->getSpineItemsCount();
@@ -2962,6 +2970,14 @@ bool RivuletReaderActivity::turnPrev(const int skipPages) {
   int remaining = std::max(1, skipPages);
   while (remaining-- > 0) {
     if (engine_.prevPage(renderer)) continue;
+    // prevPage() failing does NOT mean chapter start. A transient layout/heap
+    // failure mid-chapter used to fall through and open the previous spine.
+    if (engine_.lastTurnFail() == rivulet::RivuletEngine::TurnFail::LayoutFailed || !engine_.atChapterStart()) {
+      LOG_ERR("RVR", "pageBack layout failed mid-chapter spine=%d page=%d — staying", spineIndex_,
+              engine_.currentPage());
+      requestUpdate();
+      return true;
+    }
     // Previous spine → confirmed last page of that chapter (wait before paint).
     // legacy: pendingPageJump=UINT16_MAX + blocking full section build before paint.
     const int originSpine = spineIndex_;
