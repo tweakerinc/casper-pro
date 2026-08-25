@@ -224,7 +224,11 @@ class BaseTheme {
                         const std::function<UIIcon(int index)>& rowIcon = nullptr,
                         const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
                         const std::function<bool(int index)>& rowDimmed = nullptr,
-                        const std::function<bool(int index)>& rowApplied = nullptr) const;
+                        const std::function<bool(int index)>& rowApplied = nullptr,
+                        const std::function<bool(int index)>& rowCentered = nullptr) const;
+  // In-list section title (Settings → Reader → "Reader Controls").
+  static int listSectionHeaderHeight(const GfxRenderer& renderer);
+  static void drawListSectionHeader(const GfxRenderer& renderer, int x, int width, int y, const char* title);
   virtual void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
                           const char* subtitle = nullptr) const;
   virtual void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,

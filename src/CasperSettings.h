@@ -299,6 +299,11 @@ class CasperSettings : public PersistableStore<CasperSettings> {
     LP_MENU_READING_STATS = 10,
     // Append-only: starts Create Clipping (word select) on long-press Confirm.
     LP_MENU_CLIPPINGS = 11,
+    // Reader Controls shared actions (side long-press + menu long/double).
+    LP_MENU_CHAPTER_SKIP = 12,
+    LP_MENU_ORIENTATION_CHANGE = 13,
+    LP_MENU_ORIENTATION_FLIP = 14,
+    LP_MENU_DARK_MODE = 15,
     LONG_PRESS_MENU_FUNCTION_COUNT
   };
 
@@ -313,6 +318,7 @@ class CasperSettings : public PersistableStore<CasperSettings> {
     // Retired: was Clipping Tool on side hold; kept so old settings.json index 3
     // does not collide with a new meaning. Load clamps unknown → OFF.
     LONG_PRESS_BUTTON_BEHAVIOR_RESERVED_3 = 3,
+    ORIENTATION_FLIP = 4,  // toggle Portrait ↔ orientationFlipWith
     LONG_PRESS_BUTTON_BEHAVIOR_COUNT
   };
 
@@ -513,8 +519,15 @@ class CasperSettings : public PersistableStore<CasperSettings> {
   uint8_t opdsFilenameFormat = 0;
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
-  // Long-press page turn button behavior
+  // Long-press page turn button behavior (legacy combined). Migrated into
+  // longPressSideA/B on load; kept so old settings.json still round-trips.
   uint8_t longPressButtonBehavior = OFF;
+  // Per-side long-press (same LONG_PRESS_MENU_FUNCTION list as Menu shortcuts).
+  // hw: X3 Left/Right, X4/Pro Up/Down.
+  uint8_t longPressSideA = LP_MENU_DISABLED;
+  uint8_t longPressSideB = LP_MENU_DISABLED;
+  uint8_t orientationFlipWith = LANDSCAPE_CCW;
+  uint8_t casperSideLongPressMenuFnMigrated = 0;
   // Long-press Confirm function in EPUB reader (cycles through LONG_PRESS_MENU_FUNCTION values).
   // Casper: open stock Casper dictionary (not a custom dictionary stack).
   uint8_t longPressMenuFunction = LP_MENU_DICTIONARY;

@@ -307,9 +307,11 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
                          const std::function<UIIcon(int index)>& rowIcon,
                          const std::function<std::string(int index)>& rowValue, bool highlightValue,
                          const std::function<bool(int index)>& rowDimmed,
-                         const std::function<bool(int index)>& rowApplied) const {
+                         const std::function<bool(int index)>& rowApplied,
+                         const std::function<bool(int index)>& rowCentered) const {
   // Icons no longer drawn — free horizontal space for long book titles.
   (void)rowIcon;
+  (void)rowCentered;
 
   const bool hasSubtitleCb = (rowSubtitle != nullptr);
   const int singleRowH = lyraListRowHeight(renderer, hasSubtitleCb);

@@ -84,8 +84,10 @@ class RivuletReaderActivity final : public Activity {
   static bool extractEpubItem(void* ctx, const char* srcPath, const char* destPath);
   bool fireMenuShortcut(uint8_t function);
   bool tryLongPressShortcut(uint8_t function, bool& suppressRelease);
-  // Side long-press: cycle Reading Orientation (Settings → Long-Press Buttons).
+  bool trySideLongPressShortcut();
   void cycleReadingOrientation(bool nextTriggered);
+  void flipReadingOrientation();
+  void applyReadingOrientation(uint8_t newOrientation);
   // Chapter skip: land at chapter start (next) or previous chapter last page / this chapter start.
   void chapterSkipNext();
   void chapterSkipPrev();
@@ -164,6 +166,7 @@ class RivuletReaderActivity final : public Activity {
   bool firstPaint_ = true;
   bool ignoreNextConfirmRelease_ = false;
   bool ignoreNextBackRelease_ = false;  // after long-press Back shortcut
+  bool ignoreNextSideRelease_ = false;  // after side Up/Down long-press
   bool pendingConfirmMenuOpen_ = false;
   bool pageMapDirty_ = false;  // map grew since last SD save
   // True while walking prev-chapter to true last page — render shows Loading only

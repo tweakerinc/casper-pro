@@ -3083,19 +3083,34 @@ bool RivuletReaderActivity::fireMenuShortcut(const uint8_t function) {
         openFootnotesMenu();
       }
       return true;
+    case CasperSettings::LP_MENU_CHAPTER_SKIP:
+      chapterSkipNext();
+      return true;
+    case CasperSettings::LP_MENU_ORIENTATION_CHANGE:
+      cycleReadingOrientation(/*nextTriggered=*/false);
+      return true;
+    case CasperSettings::LP_MENU_ORIENTATION_FLIP:
+      flipReadingOrientation();
+      return true;
+    case CasperSettings::LP_MENU_DARK_MODE: {
+      // In-reader shortcut: toggle reader-scoped dark (book dark, Home stays light).
+      const bool on = !(SETTINGS.readerDarkMode != 0 && SETTINGS.darkModeReaderOnly != 0);
+      SETTINGS.readerDarkMode = on ? 1 : 0;
+      if (on) SETTINGS.darkModeReaderOnly = 1;
+      SETTINGS.saveToFile();
+      renderer.setInvertOnDisplay(false);  // never whole-UI from a reader hold
+      firstPaint_ = true;
+      requestUpdate();
+      return true;
+    }
     case CasperSettings::LP_MENU_DISABLED:
     default:
       return false;
   }
 }
 
-void RivuletReaderActivity::cycleReadingOrientation(const bool nextTriggered) {
-  const uint8_t count = static_cast<uint8_t>(CasperSettings::ORIENTATION_COUNT);
-  if (count == 0) return;
-  const uint8_t cur = SETTINGS.orientation;
-  const uint8_t neu =
-      nextTriggered ? static_cast<uint8_t>((cur + count - 1) % count) : static_cast<uint8_t>((cur + 1) % count);
-  if (neu == cur) return;
+void RivuletReaderActivity::applyReadingOrientation(const uint8_t neu) {
+  if (neu >= CasperSettings::ORIENTATION_COUNT || neu == SETTINGS.orientation) return;
 
   const int keepSpine = spineIndex_;
   const int keepPage = engine_.currentPage();
@@ -3124,6 +3139,27 @@ void RivuletReaderActivity::cycleReadingOrientation(const bool nextTriggered) {
     (void)saveProgress();
   }
   requestUpdate();
+}
+
+void RivuletReaderActivity::cycleReadingOrientation(const bool nextTriggered) {
+  const uint8_t count = static_cast<uint8_t>(CasperSettings::ORIENTATION_COUNT);
+  if (count == 0) return;
+  const uint8_t cur = SETTINGS.orientation;
+  const uint8_t neu =
+      nextTriggered ? static_cast<uint8_t>((cur + count - 1) % count) : static_cast<uint8_t>((cur + 1) % count);
+  applyReadingOrientation(neu);
+}
+
+void RivuletReaderActivity::flipReadingOrientation() {
+  // Portrait ↔ Flip With. Either side long-press toggles; if currently elsewhere,
+  // first flip lands on Portrait so the pair is always reachable in one hold.
+  uint8_t other = SETTINGS.orientationFlipWith;
+  if (other == CasperSettings::PORTRAIT || other >= CasperSettings::ORIENTATION_COUNT) {
+    other = CasperSettings::LANDSCAPE_CCW;
+  }
+  const uint8_t neu =
+      (SETTINGS.orientation == CasperSettings::PORTRAIT) ? other : static_cast<uint8_t>(CasperSettings::PORTRAIT);
+  applyReadingOrientation(neu);
 }
 
 void RivuletReaderActivity::chapterSkipNext() {
@@ -3207,6 +3243,43 @@ bool RivuletReaderActivity::tryLongPressShortcut(const uint8_t function, bool& s
   if (!fireMenuShortcut(function)) return false;
   suppressRelease = true;
   pendingConfirmMenuOpen_ = false;
+  return true;
+}
+
+bool RivuletReaderActivity::trySideLongPressShortcut() {
+  if (ignoreNextSideRelease_) return false;
+  const bool sideA = gpio.isPressed(HalGPIO::BTN_UP);    // X3 Left / X4 Pro Up
+  const bool sideB = gpio.isPressed(HalGPIO::BTN_DOWN);  // X3 Right / X4 Pro Down
+  if (!sideA && !sideB) return false;
+
+  const uint8_t action = sideA ? SETTINGS.longPressSideA : SETTINGS.longPressSideB;
+  if (action == CasperSettings::LP_MENU_DISABLED) return false;
+
+  const unsigned long needHold =
+      (action == CasperSettings::LP_MENU_KOSYNC) ? ReaderUtils::GO_HOME_MS : ReaderUtils::BOOKMARK_HOLD_MS;
+  if (mappedInput.getHeldTime() < needHold) return false;
+
+  bool ok = false;
+  if (action == CasperSettings::LP_MENU_CHAPTER_SKIP) {
+    // Physical side A (left/up) = back; side B (right/down) = forward.
+    if (sideA) {
+      chapterSkipPrev();
+    } else {
+      chapterSkipNext();
+    }
+    ok = true;
+  } else if (action == CasperSettings::LP_MENU_ORIENTATION_CHANGE) {
+    cycleReadingOrientation(/*nextTriggered=*/sideB);
+    ok = true;
+  } else {
+    ok = fireMenuShortcut(action);
+  }
+  if (!ok) return false;
+
+  ignoreNextSideRelease_ = true;
+  pageTurnLatch_.waitingRelease = true;
+  pendingConfirmMenuOpen_ = false;
+  LOG_INF("RVR", "side long-press hw=%s action=%u", sideA ? "A" : "B", static_cast<unsigned>(action));
   return true;
 }
 
@@ -3376,6 +3449,21 @@ void RivuletReaderActivity::loop() {
     }
   }
 
+  // Side long-press: fire while held (before page-turn latch eats the release).
+  if (trySideLongPressShortcut()) {
+    return;
+  }
+  if (ignoreNextSideRelease_) {
+    if (!gpio.isPressed(HalGPIO::BTN_UP) && !gpio.isPressed(HalGPIO::BTN_DOWN)) {
+      ignoreNextSideRelease_ = false;
+      (void)mappedInput.wasPressed(MappedInputManager::Button::PageBack);
+      (void)mappedInput.wasReleased(MappedInputManager::Button::PageBack);
+      (void)mappedInput.wasPressed(MappedInputManager::Button::PageForward);
+      (void)mappedInput.wasReleased(MappedInputManager::Button::PageForward);
+    }
+    return;
+  }
+
   // Page turns: PageBack/PageForward (includes Up/Down/Left/Right + Side Layout +
   // Orient Front Buttons from the button map), tilt, optional power-button turn,
   // and touch zones — same path as Xtc/Epub/Txt readers.
@@ -3391,29 +3479,6 @@ void RivuletReaderActivity::loop() {
   // Don't chapter-skip after a power+side chord (screenshot path on some boards).
   if (gpio.wasReleased(HalGPIO::BTN_POWER) && gpio.wasReleased(HalGPIO::BTN_DOWN)) {
     return;
-  }
-
-  const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
-  const bool longPress = !fromTilt && heldMs > ReaderUtils::SKIP_HOLD_MS;
-
-  // Settings → Long-Press Buttons = Chapter Skip.
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
-    if (nextTriggered) {
-      chapterSkipNext();
-      return;
-    }
-    if (prevTriggered) {
-      chapterSkipPrev();
-      return;
-    }
-  }
-
-  // Settings → Long-Press Buttons = Orientation Change.
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.ORIENTATION_CHANGE) {
-    if (prevTriggered || nextTriggered) {
-      cycleReadingOrientation(nextTriggered);
-      return;
-    }
   }
 
   if (prevTriggered) {

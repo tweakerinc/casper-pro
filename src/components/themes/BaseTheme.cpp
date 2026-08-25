@@ -565,13 +565,42 @@ int BaseTheme::getListPageItems(int contentHeight, bool hasSubtitle) const {
   return std::max(1, contentHeight / rowStep);
 }
 
+int BaseTheme::listSectionHeaderHeight(const GfxRenderer& renderer) {
+  // Slot = chrome + verticalSpacing. Chrome is centered so the gap above the
+  // first rule equals the gap below the second.
+  constexpr int kRuleThickness = 1;
+  constexpr int kBandExtraPad = 10;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int gap = UITheme::getInstance().getMetrics().verticalSpacing;
+  return kRuleThickness + lineH + kBandExtraPad + kRuleThickness + gap;
+}
+
+void BaseTheme::drawListSectionHeader(const GfxRenderer& renderer, int x, int width, int y, const char* title) {
+  constexpr int kRuleThickness = 1;
+  constexpr int kBandExtraPad = 10;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int chromeH = kRuleThickness + lineH + kBandExtraPad + kRuleThickness;
+  const int totalH = listSectionHeaderHeight(renderer);
+  const int y0 = y + std::max(0, (totalH - chromeH) / 2);
+  const int sidePad = UITheme::getInstance().getMetrics().contentSidePadding;
+  const int maxTitleW = std::max(40, width - sidePad * 2);
+  renderer.drawLine(x, y0, x + width - 1, y0, kRuleThickness, true);
+  const int titleY = y0 + kRuleThickness + kBandExtraPad / 2;
+  const char* label = (title != nullptr) ? title : "";
+  const auto truncated = renderer.truncatedText(UI_10_FONT_ID, label, maxTitleW, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, titleY, truncated.c_str(), true, EpdFontFamily::BOLD);
+  const int bottomRuleY = y0 + kRuleThickness + lineH + kBandExtraPad;
+  renderer.drawLine(x, bottomRuleY, x + width - 1, bottomRuleY, kRuleThickness, true);
+}
+
 void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                          const std::function<std::string(int index)>& rowTitle,
                          const std::function<std::string(int index)>& rowSubtitle,
                          const std::function<UIIcon(int index)>& rowIcon,
                          const std::function<std::string(int index)>& rowValue, bool highlightValue,
                          const std::function<bool(int index)>& rowDimmed,
-                         const std::function<bool(int index)>& rowApplied) const {
+                         const std::function<bool(int index)>& rowApplied,
+                         const std::function<bool(int index)>& rowCentered) const {
   (void)highlightValue;
   // Icons reserved title width for no gain on Bare/Penumbra; ignore rowIcon.
   (void)rowIcon;
@@ -626,6 +655,9 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 
   // If selection is below what a dense pack from pageStart can show, slide start up.
   auto measureRowH = [&](int i) -> int {
+    if (rowCentered && rowCentered(i)) {
+      return listSectionHeaderHeight(renderer);
+    }
     int rowTextWidth = contentWidth - BaseMetrics::values.contentSidePadding * 2;
     const auto itemName = rowTitle(i);
     std::vector<std::string> titleLines =
@@ -671,7 +703,8 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
     if (applied) rowTextWidth -= kRadioReserve;
 
     std::string valueText;
-    if (rowValue != nullptr) {
+    const bool centered = rowCentered && rowCentered(i);
+    if (!centered && rowValue != nullptr) {
       valueText = rowValue(i);
       if (!valueText.empty()) {
         int maxValW = std::max(0, rowTextWidth - 40 - minValueGap);
@@ -695,7 +728,7 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 
     std::string subtitleDrawn;
     int subtitleLineH = 0;
-    if (rowSubtitle != nullptr) {
+    if (!centered && rowSubtitle != nullptr) {
       std::string subtitleText = rowSubtitle(i);
       if (!subtitleText.empty()) {
         subtitleDrawn = renderer.truncatedText(SMALL_FONT_ID, subtitleText.c_str(), rowTextWidth);
@@ -703,9 +736,17 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       }
     }
 
-    const int rowHeight = computeListRowHeightForLines(renderer, !subtitleDrawn.empty() || hasSubtitleCb, nTitleLines);
+    const int rowHeight = centered ? listSectionHeaderHeight(renderer)
+                                   : computeListRowHeightForLines(renderer, !subtitleDrawn.empty() || hasSubtitleCb,
+                                                                  nTitleLines);
     if (i > pageStartIndex && itemY + rowHeight > rect.y + rect.height) {
       break;
+    }
+
+    if (centered) {
+      drawListSectionHeader(renderer, rect.x, contentWidth, itemY, itemName.c_str());
+      itemY += rowHeight;
+      continue;
     }
 
     // Focus: bold only on button-nav boards. Touch UI is tap-to-open — no scroll highlight.

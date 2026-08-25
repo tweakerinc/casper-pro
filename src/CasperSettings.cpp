@@ -390,6 +390,11 @@ void CasperSettings::toJson(JsonDocument& doc) const {
   doc["longPressMenuFunction"] = longPressMenuFunction;
   doc["longPressBackFunction"] = longPressBackFunction;
   doc["doublePressMenuFunction"] = doublePressMenuFunction;
+  // Per-side long-press + Flip With (DynamicEnum — no valuePtr in SettingsList).
+  doc["longPressSideA"] = longPressSideA;
+  doc["longPressSideB"] = longPressSideB;
+  doc["orientationFlipWith"] = orientationFlipWith;
+  doc["casperSideLongPressMenuFnMigrated"] = casperSideLongPressMenuFnMigrated;
   doc["gestureTopLeftDown"] = gestureTopLeftDown;
   doc["gestureTopRightDown"] = gestureTopRightDown;
   doc["gestureBottomLeftUp"] = gestureBottomLeftUp;
@@ -1198,6 +1203,18 @@ bool CasperSettings::fromJson(JsonVariantConst doc) {
     doublePressMenuFunction = clamp(doc["doublePressMenuFunction"] | (uint8_t)LP_MENU_DISABLED,
                                     LONG_PRESS_MENU_FUNCTION_COUNT, (uint8_t)LP_MENU_DISABLED);
   }
+  if (!doc["longPressSideA"].isNull()) {
+    longPressSideA =
+        clamp(doc["longPressSideA"] | (uint8_t)LP_MENU_DISABLED, LONG_PRESS_MENU_FUNCTION_COUNT, (uint8_t)LP_MENU_DISABLED);
+  }
+  if (!doc["longPressSideB"].isNull()) {
+    longPressSideB =
+        clamp(doc["longPressSideB"] | (uint8_t)LP_MENU_DISABLED, LONG_PRESS_MENU_FUNCTION_COUNT, (uint8_t)LP_MENU_DISABLED);
+  }
+  if (!doc["orientationFlipWith"].isNull()) {
+    orientationFlipWith =
+        clamp(doc["orientationFlipWith"] | (uint8_t)LANDSCAPE_CCW, ORIENTATION_COUNT, (uint8_t)LANDSCAPE_CCW);
+  }
   auto loadGesture = [&](const char* key, uint8_t& slot, uint8_t def) {
     if (!doc[key].isNull()) {
       slot = clamp(doc[key] | def, GESTURE_ACTION_COUNT, def);
@@ -1229,6 +1246,60 @@ bool CasperSettings::fromJson(JsonVariantConst doc) {
   if (longPressButtonBehavior >= LONG_PRESS_BUTTON_BEHAVIOR_COUNT ||
       longPressButtonBehavior == LONG_PRESS_BUTTON_BEHAVIOR_RESERVED_3) {
     longPressButtonBehavior = OFF;
+  }
+  // Migrate shared longPressButtonBehavior → per-side A/B (once), still as
+  // LONG_PRESS_BUTTON_BEHAVIOR indices; the next migration remaps to menu fns.
+  if (doc["longPressButtonBehavior"].is<int>() && !doc["longPressSideA"].is<int>() &&
+      !doc["longPressSideB"].is<int>()) {
+    uint8_t v = static_cast<uint8_t>(doc["longPressButtonBehavior"].as<int>());
+    if (v >= LONG_PRESS_BUTTON_BEHAVIOR_COUNT || v == LONG_PRESS_BUTTON_BEHAVIOR_RESERVED_3) v = OFF;
+    longPressSideA = v;
+    longPressSideB = v;
+    needsResave = true;
+    LOG_DBG("CPS", "migrated longPressButtonBehavior=%u → side A/B", static_cast<unsigned>(v));
+  }
+  // Reinterpret side long-press storage as LONG_PRESS_MENU_FUNCTION (unified list).
+  {
+    const uint8_t migrated = doc["casperSideLongPressMenuFnMigrated"] | (uint8_t)0;
+    if (migrated == 0) {
+      auto mapSide = [](uint8_t v) -> uint8_t {
+        // Old LONG_PRESS_BUTTON_BEHAVIOR → LONG_PRESS_MENU_FUNCTION.
+        switch (v) {
+          case CHAPTER_SKIP:
+            return LP_MENU_CHAPTER_SKIP;
+          case ORIENTATION_CHANGE:
+            return LP_MENU_ORIENTATION_CHANGE;
+          case ORIENTATION_FLIP:
+            return LP_MENU_ORIENTATION_FLIP;
+          case OFF:
+          case LONG_PRESS_BUTTON_BEHAVIOR_RESERVED_3:
+          default:
+            return LP_MENU_DISABLED;
+        }
+      };
+      // Fresh SD / factory defaults: sides are already LP_MENU_DISABLED (1),
+      // which collides with old CHAPTER_SKIP=1. Only remap when an old combined
+      // or side key is actually on disk.
+      const bool hadOldCombined = doc["longPressButtonBehavior"].is<int>();
+      const bool hadSides = doc["longPressSideA"].is<int>() || doc["longPressSideB"].is<int>();
+      if (hadOldCombined || hadSides) {
+        longPressSideA = mapSide(longPressSideA);
+        longPressSideB = mapSide(longPressSideB);
+      }
+      casperSideLongPressMenuFnMigrated = 1;
+      needsResave = true;
+    } else {
+      casperSideLongPressMenuFnMigrated = 1;
+    }
+  }
+  auto clampSide = [&](uint8_t& side) {
+    if (side >= LONG_PRESS_MENU_FUNCTION_COUNT) side = LP_MENU_DISABLED;
+  };
+  clampSide(longPressSideA);
+  clampSide(longPressSideB);
+  // Flip-with must be a real non-portrait orientation.
+  if (orientationFlipWith == PORTRAIT || orientationFlipWith >= ORIENTATION_COUNT) {
+    orientationFlipWith = LANDSCAPE_CCW;
   }
 
   // Frontlight active + presets (quick sheet; not SettingsList).
