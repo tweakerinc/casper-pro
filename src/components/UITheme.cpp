@@ -68,7 +68,7 @@ const ThemeMetrics& UITheme::getMetrics() const {
   // hasTouch() can flip once touch init completes after static construction, so the
   // cached copy is refreshed when the flag differs instead of copying the struct per call.
   // Soft front chrome (X4 Pro): keep footer height so Menu/Library/Recents/Read draw.
-  // Button-only touch boards (Sticky with physical keys) still hide the strip.
+  // Touch boards with physical front keys (Sticky) still hide the strip.
   const bool touchChrome = gpio.hasTouch() && !gpio.needsOnScreenFrontChrome();
   if (!metricsValid || touchChrome != metricsForTouch) {
     adjustedMetrics = *currentMetrics;

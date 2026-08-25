@@ -89,7 +89,8 @@ class HalGPIO {
   // GT911 capacitive Home pad (X4 Pro / Sticky). One-shot per InputManager::update().
   bool wasHomeKeyTapped() const;
   bool wasHomeKeyLongPressed() const;
-  // Touch + no physical Back/Confirm (X4 Pro): soft front chrome is required.
+  // Touch + no physical Back/Confirm (X4 Pro): draw tappable Menu/Library/…
+  // pills. Capacitive Home still works as global goHome.
   bool needsOnScreenFrontChrome() const;
   void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 

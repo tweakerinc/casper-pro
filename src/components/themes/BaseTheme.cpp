@@ -347,7 +347,7 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   // letters stacked one under the next (S then I then D then E) so they read
   // with the landscape page without a wide horizontal word into the book.
   // Hide chrome on touch boards that still have physical front keys (e.g. Sticky).
-  // X4 Pro has no Back/Confirm GPIOs — draw soft pills as touch targets.
+  // X4 Pro has no Back/Confirm GPIOs — draw tappable pills (Menu/Library/…).
   if (gpio.hasTouch() && !gpio.needsOnScreenFrontChrome()) {
     return;
   }

@@ -1841,9 +1841,7 @@ void HomeActivity::render(RenderLock&& lock) {
           // Touch/Home-pad devices: no soft Down/Open (View All + side keys + Home).
           // Button devices: mid = Down on clock Recents, else Recents; right = Open/Read.
           if (gpio.hasTouch() && !mappedInput.needsOnScreenFrontChrome()) {
-            // Footer reclaimed for content — no soft chrome labels.
-          } else if (gpio.hasTouch()) {
-            GUI.drawButtonHints(renderer, tr(STR_MENU), tr(STR_LIBRARY), "", "");
+            // Sticky: physical keys, no soft strip.
           } else {
             const bool recentsPanel = PenumbraThemeUi::isRecentsUnderPanel();
             const char* mid =
@@ -1950,9 +1948,7 @@ void HomeActivity::render(RenderLock&& lock) {
       coverBufferStored = false;
     }
     if (gpio.hasTouch() && !mappedInput.needsOnScreenFrontChrome()) {
-      // No soft chrome — Home pad / sides / View All.
-    } else if (gpio.hasTouch()) {
-      GUI.drawButtonHints(renderer, tr(STR_MENU), tr(STR_LIBRARY), "", "");
+      // Sticky: physical keys, no soft strip.
     } else {
       const bool recentsPanel = PenumbraThemeUi::isRecentsUnderPanel();
       const char* mid =
@@ -2130,11 +2126,9 @@ void HomeActivity::render(RenderLock&& lock) {
                               currentBookProgressPercent, &globalStats, nullptr);
     }
 
-    // Bare / Penumbra footer. Touch + Home pad: no Down/Open soft labels.
+    // Bare / Penumbra footer. Same Menu · Library · Recents · Read as X3/X4.
     if (gpio.hasTouch() && !mappedInput.needsOnScreenFrontChrome()) {
-      // Footer reclaimed.
-    } else if (gpio.hasTouch()) {
-      GUI.drawButtonHints(renderer, tr(STR_MENU), tr(STR_LIBRARY), "", "");
+      // Sticky: physical keys, no soft strip.
     } else {
       const bool recentsPanel = isPenumbraTheme() && PenumbraThemeUi::isRecentsUnderPanel();
       const char* midHint =
