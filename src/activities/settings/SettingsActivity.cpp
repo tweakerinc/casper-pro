@@ -533,15 +533,24 @@ void SettingsActivity::loop() {
     requestUpdate();
   };
 
-  buttonNavigator.onRelease(ButtonNavigator::getFrontNextButtons(), moveListNext);
-  buttonNavigator.onRelease(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
-  buttonNavigator.onContinuous(ButtonNavigator::getFrontNextButtons(), moveListNext);
-  buttonNavigator.onContinuous(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
+  if (mappedInput.needsOnScreenFrontChrome()) {
+    // X4 Pro: the only physical keys are GPIO Up/Down with LEFT/RIGHT functions.
+    // Bind NavNext (Down|Right) to the list so those keys move rows; tabs stay touch.
+    buttonNavigator.onRelease(ButtonNavigator::getNextButtons(), moveListNext);
+    buttonNavigator.onRelease(ButtonNavigator::getPreviousButtons(), moveListPrev);
+    buttonNavigator.onContinuous(ButtonNavigator::getNextButtons(), moveListNext);
+    buttonNavigator.onContinuous(ButtonNavigator::getPreviousButtons(), moveListPrev);
+  } else {
+    buttonNavigator.onRelease(ButtonNavigator::getFrontNextButtons(), moveListNext);
+    buttonNavigator.onRelease(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
+    buttonNavigator.onContinuous(ButtonNavigator::getFrontNextButtons(), moveListNext);
+    buttonNavigator.onContinuous(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
 
-  buttonNavigator.onRelease(ButtonNavigator::getSideNextButtons(), moveTabNext);
-  buttonNavigator.onRelease(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
-  buttonNavigator.onContinuous(ButtonNavigator::getSideNextButtons(), moveTabNext);
-  buttonNavigator.onContinuous(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
+    buttonNavigator.onRelease(ButtonNavigator::getSideNextButtons(), moveTabNext);
+    buttonNavigator.onRelease(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
+    buttonNavigator.onContinuous(ButtonNavigator::getSideNextButtons(), moveTabNext);
+    buttonNavigator.onContinuous(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
+  }
 
   if (hasChangedCategory) {
     const int priorFocus = selectedSettingIndex;

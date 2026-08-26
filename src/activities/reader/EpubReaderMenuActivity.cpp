@@ -427,15 +427,24 @@ void EpubReaderMenuActivity::loop() {
     }
   };
 
-  buttonNavigator.onRelease(ButtonNavigator::getFrontNextButtons(), moveListNext);
-  buttonNavigator.onRelease(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
-  buttonNavigator.onContinuous(ButtonNavigator::getFrontNextButtons(), moveListNext);
-  buttonNavigator.onContinuous(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
+  if (mappedInput.needsOnScreenFrontChrome()) {
+    // X4 Pro: physical keys are LEFT/RIGHT functions. Bind NavNext to the list;
+    // tabs stay touch-only so a side key does not jump categories.
+    buttonNavigator.onRelease(ButtonNavigator::getNextButtons(), moveListNext);
+    buttonNavigator.onRelease(ButtonNavigator::getPreviousButtons(), moveListPrev);
+    buttonNavigator.onContinuous(ButtonNavigator::getNextButtons(), moveListNext);
+    buttonNavigator.onContinuous(ButtonNavigator::getPreviousButtons(), moveListPrev);
+  } else {
+    buttonNavigator.onRelease(ButtonNavigator::getFrontNextButtons(), moveListNext);
+    buttonNavigator.onRelease(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
+    buttonNavigator.onContinuous(ButtonNavigator::getFrontNextButtons(), moveListNext);
+    buttonNavigator.onContinuous(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
 
-  buttonNavigator.onRelease(ButtonNavigator::getSideNextButtons(), moveTabNext);
-  buttonNavigator.onRelease(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
-  buttonNavigator.onContinuous(ButtonNavigator::getSideNextButtons(), moveTabNext);
-  buttonNavigator.onContinuous(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
+    buttonNavigator.onRelease(ButtonNavigator::getSideNextButtons(), moveTabNext);
+    buttonNavigator.onRelease(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
+    buttonNavigator.onContinuous(ButtonNavigator::getSideNextButtons(), moveTabNext);
+    buttonNavigator.onContinuous(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
+  }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     activateSelected();

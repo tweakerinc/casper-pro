@@ -326,15 +326,24 @@ void TextSettingsActivity::loop() {
     }
   };
 
-  buttonNavigator_.onRelease(ButtonNavigator::getFrontNextButtons(), moveListNext);
-  buttonNavigator_.onRelease(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
-  buttonNavigator_.onContinuous(ButtonNavigator::getFrontNextButtons(), moveListNext);
-  buttonNavigator_.onContinuous(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
+  if (mappedInput.needsOnScreenFrontChrome()) {
+    // X4 Pro: physical keys are LEFT/RIGHT functions. Bind NavNext to the list;
+    // tabs stay touch-only so a side key does not jump Font/Layout.
+    buttonNavigator_.onRelease(ButtonNavigator::getNextButtons(), moveListNext);
+    buttonNavigator_.onRelease(ButtonNavigator::getPreviousButtons(), moveListPrev);
+    buttonNavigator_.onContinuous(ButtonNavigator::getNextButtons(), moveListNext);
+    buttonNavigator_.onContinuous(ButtonNavigator::getPreviousButtons(), moveListPrev);
+  } else {
+    buttonNavigator_.onRelease(ButtonNavigator::getFrontNextButtons(), moveListNext);
+    buttonNavigator_.onRelease(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
+    buttonNavigator_.onContinuous(ButtonNavigator::getFrontNextButtons(), moveListNext);
+    buttonNavigator_.onContinuous(ButtonNavigator::getFrontPreviousButtons(), moveListPrev);
 
-  buttonNavigator_.onRelease(ButtonNavigator::getSideNextButtons(), moveTabNext);
-  buttonNavigator_.onRelease(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
-  buttonNavigator_.onContinuous(ButtonNavigator::getSideNextButtons(), moveTabNext);
-  buttonNavigator_.onContinuous(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
+    buttonNavigator_.onRelease(ButtonNavigator::getSideNextButtons(), moveTabNext);
+    buttonNavigator_.onRelease(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
+    buttonNavigator_.onContinuous(ButtonNavigator::getSideNextButtons(), moveTabNext);
+    buttonNavigator_.onContinuous(ButtonNavigator::getSidePreviousButtons(), moveTabPrev);
+  }
 }
 
 void TextSettingsActivity::render(RenderLock&&) {

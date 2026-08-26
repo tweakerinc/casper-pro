@@ -507,26 +507,45 @@ int softChromeReleasedSlot(const MappedInputManager& input, HalGPIO& gpio, const
   return static_cast<int>(kSlotToBtn[slot]);
 }
 
-bool softChromeMatches(const MappedInputManager& input, HalGPIO& gpio, const GfxRenderer& renderer,
-                       const uint8_t hwBtn) {
-  return softChromeReleasedSlot(input, gpio, renderer) == static_cast<int>(hwBtn);
+bool softChromeIsLogical(const MappedInputManager& input, HalGPIO& gpio, const GfxRenderer& renderer,
+                         const MappedInputManager::Button button) {
+  const int hw = softChromeReleasedSlot(input, gpio, renderer);
+  if (hw < 0 || hw >= CasperSettings::HW_REMAP_BUTTON_COUNT) return false;
+  const uint8_t func = SETTINGS.hwButtonFunction[static_cast<uint8_t>(hw)];
+  switch (button) {
+    case MappedInputManager::Button::Back:
+      return func == CasperSettings::BTN_FUNC_BACK;
+    case MappedInputManager::Button::Confirm:
+      return func == CasperSettings::BTN_FUNC_CONFIRM;
+    case MappedInputManager::Button::Left:
+      return func == CasperSettings::BTN_FUNC_LEFT;
+    case MappedInputManager::Button::Right:
+      return func == CasperSettings::BTN_FUNC_RIGHT;
+    case MappedInputManager::Button::Up:
+      return func == CasperSettings::BTN_FUNC_UP;
+    case MappedInputManager::Button::Down:
+      return func == CasperSettings::BTN_FUNC_DOWN;
+    case MappedInputManager::Button::Power:
+    case MappedInputManager::Button::PageBack:
+    case MappedInputManager::Button::PageForward:
+    case MappedInputManager::Button::NavNext:
+    case MappedInputManager::Button::NavPrevious:
+      return false;
+  }
+  return false;
 }
 }  // namespace
 
 bool MappedInputManager::wasPressed(const Button button) const {
   if (button == Button::Back && wasBackGesture()) return true;
   // Soft chrome is release-style (tap); treat as press too so Settings Back works.
-  if (button == Button::Back && softChromeMatches(*this, gpio, renderer, HalGPIO::BTN_BACK)) return true;
-  if (button == Button::Confirm && softChromeMatches(*this, gpio, renderer, HalGPIO::BTN_CONFIRM)) return true;
+  if (softChromeIsLogical(*this, gpio, renderer, button)) return true;
   return mapButton(button, &HalGPIO::wasPressed);
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
   if (button == Button::Back && wasBackGesture()) return true;
-  if (button == Button::Back && softChromeMatches(*this, gpio, renderer, HalGPIO::BTN_BACK)) return true;
-  if (button == Button::Confirm && softChromeMatches(*this, gpio, renderer, HalGPIO::BTN_CONFIRM)) return true;
-  if (button == Button::Left && softChromeMatches(*this, gpio, renderer, HalGPIO::BTN_LEFT)) return true;
-  if (button == Button::Right && softChromeMatches(*this, gpio, renderer, HalGPIO::BTN_RIGHT)) return true;
+  if (softChromeIsLogical(*this, gpio, renderer, button)) return true;
   return mapButton(button, &HalGPIO::wasReleased);
 }
 

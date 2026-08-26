@@ -211,9 +211,15 @@ class OptionPopup {
       return false;
     };
     const bool prev =
-        lockedFrontChrome ? gpio.wasPressed(HalGPIO::BTN_LEFT) : anyPressed(ButtonNavigator::getFrontPreviousButtons());
+        lockedFrontChrome
+            ? gpio.wasPressed(HalGPIO::BTN_LEFT)
+            : anyPressed(input.needsOnScreenFrontChrome() ? ButtonNavigator::getPreviousButtons()
+                                                          : ButtonNavigator::getFrontPreviousButtons());
     const bool next =
-        lockedFrontChrome ? gpio.wasPressed(HalGPIO::BTN_RIGHT) : anyPressed(ButtonNavigator::getFrontNextButtons());
+        lockedFrontChrome
+            ? gpio.wasPressed(HalGPIO::BTN_RIGHT)
+            : anyPressed(input.needsOnScreenFrontChrome() ? ButtonNavigator::getNextButtons()
+                                                          : ButtonNavigator::getFrontNextButtons());
     // Select / dismiss on *press* (classic OptionPopup). Open-gesture drain
     // above blocks the host's opening Confirm from also selecting here; dismiss
     // drain below blocks release-driven hosts from acting on the same click.
