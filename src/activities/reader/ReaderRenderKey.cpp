@@ -69,7 +69,7 @@ Layout compute(const GfxRenderer& renderer) {
   const bool landscapeCw = orient == GfxRenderer::Orientation::LandscapeClockwise;
   const bool landscapeCcw = orient == GfxRenderer::Orientation::LandscapeCounterClockwise;
   const bool landscape = landscapeCw || landscapeCcw;
-  const bool touchNoChrome = gpio.hasTouch() && !gpio.needsOnScreenFrontChrome();
+  const bool touchNoChrome = gpio.hasTouch();
   const int frontSideReserve = (landscape && !touchNoChrome) ? BaseTheme::frontButtonHintReserve(renderer) : 0;
 
   int marginL = std::max(0, oLeft + screenMargin);
@@ -90,15 +90,10 @@ Layout compute(const GfxRenderer& renderer) {
   const int marginT =
       std::max(0, oTop + (topChromeVisible ? (topChromeBottom + clearance) : (screenMargin + clearance)));
 
-  // Bottom: whichever bottom chrome is actually taller — the status bar band or
-  // the front-button hint strip. These OVERLAY the same band (drawButtonHints
-  // paints at pageHeight - stripDepth, exactly where the status bar sits), so
-  // this is a max, never a sum, and Dictionary / Clip word-select can never
-  // cover body text. No content shifting is needed when a tool opens.
-  //
-  // The old formula stacked a second copy of the TOP chrome padding on top of
-  // statusBarHeight and then floored the result again — that double-count is
-  // what cost roughly a line of body text per page.
+  // Bottom: status-bar band. On-screen Home/Menu pills are home chrome, not
+  // reader mapping — do not max() this with the front-key hint strip or the
+  // status bar is covered (X4 Pro). Dictionary / Clip overlays reserve their
+  // own strip on those screens.
   int chromeBand = statusBarHeight + clearance;
   if (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight()) {
     chromeBand = std::max(chromeBand, statusBarHeight + metrics.statusBarVerticalMargin + clearance);

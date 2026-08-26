@@ -131,13 +131,15 @@ void RivuletReaderActivity::configureRenderKey() {
   }
 
   // Match EpubReader computeReaderViewportLayout: top chrome air + bottom status.
-  // X4 Pro paints tappable Home/Menu pills in the front-key strip (no GPIOs).
+  // On-screen Home/Menu pills are a home-screen substitute for missing Back/Confirm
+  // keys, not a reader mapping. Touch boards (X4 Pro included) keep the status bar
+  // in this band the way Sticky / X3-with-touch do.
   int oTop = 0, oRight = 0, oBottom = 0, oLeft = 0;
   renderer.getOrientedViewableTRBL(&oTop, &oRight, &oBottom, &oLeft);
   const int screenMargin = static_cast<int>(SETTINGS.screenMargin);
   const int statusBarHeight = UITheme::getInstance().getStatusBarHeight();
   const int hintStrip = UITheme::getInstance().getMetrics().buttonHintsHeight;
-  const bool touchNoChrome = gpio.hasTouch() && !gpio.needsOnScreenFrontChrome();
+  const bool touchNoChrome = gpio.hasTouch();
   // Landscape front-key chrome is a *side* strip (CCW right / CW left). Keep body
   // text clear of it so dictionary/clip can still see edge words (same idea as
   // bottom reserve in portrait).
@@ -273,9 +275,6 @@ void RivuletReaderActivity::paintCurrentPageToFramebuffer() {
   paintClippingHighlights();
   paintFootnoteMarkers();
   renderStatusBar();
-  if (mappedInput.needsOnScreenFrontChrome()) {
-    GUI.drawButtonHints(renderer, tr(STR_HOME), tr(STR_MENU), nullptr, nullptr);
-  }
 }
 
 void RivuletReaderActivity::loadProgress(int& outSpine, int& outPage) {
@@ -407,8 +406,9 @@ static bool buildPageWordBoxes(GfxRenderer& renderer, const rivulet::LaidOutPage
   boxes.reserve(128);
   pool.reserve(128);
 
-  // Reserve the front-button strip when it is on screen (dictionary/clip tools).
-  const bool touchNoChrome = gpio.hasTouch() && !gpio.needsOnScreenFrontChrome();
+  // Reader page: no on-screen front-key strip. Dictionary/clip overlays still
+  // reserve it on their own screens.
+  const bool touchNoChrome = gpio.hasTouch();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, /*hasFrontButtonHints=*/!touchNoChrome,
                                                              /*hasSideButtonHints=*/false);
   const int maxWordBottom = safe.y + safe.height - 2;
@@ -3284,6 +3284,14 @@ bool RivuletReaderActivity::trySideLongPressShortcut() {
 }
 
 void RivuletReaderActivity::loop() {
+  // Status-bar taps must not fire Home/Menu the way the home footer does.
+  // Capacitive Home + menu gesture + side keys stay the X3 mapping.
+  struct DisableSoftChrome {
+    MappedInputManager& in;
+    explicit DisableSoftChrome(MappedInputManager& in) : in(in) { in.setSoftFrontChromeEnabled(false); }
+    ~DisableSoftChrome() { in.setSoftFrontChromeEnabled(true); }
+  } hold(mappedInput);
+
   if (error_) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
         mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -3752,10 +3760,6 @@ void RivuletReaderActivity::render(RenderLock&& lock) {
   };
   paintPageContent();
   renderStatusBar();
-  if (mappedInput.needsOnScreenFrontChrome()) {
-    // Same slots as X3/X4 front keys: Back → Home, Confirm → Menu.
-    GUI.drawButtonHints(renderer, tr(STR_HOME), tr(STR_MENU), nullptr, nullptr);
-  }
   // Non-blocking bookmark feedback pill (drawn into FB; cleared when toast expires).
   if (bookmarkToastUntilMs_ != 0 && bookmarkToastMsg_ != nullptr &&
       static_cast<long>(millis() - bookmarkToastUntilMs_) < 0) {

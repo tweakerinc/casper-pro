@@ -90,7 +90,8 @@ class HalGPIO {
   bool wasHomeKeyTapped() const;
   bool wasHomeKeyLongPressed() const;
   // Touch + no physical Back/Confirm (X4 Pro): draw tappable Menu/Library/…
-  // pills. Capacitive Home still works as global goHome.
+  // pills on home and list screens. Capacitive Home still works as global goHome.
+  // The reader page does not use this — it keeps the X3 status-bar mapping.
   bool needsOnScreenFrontChrome() const;
   void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 

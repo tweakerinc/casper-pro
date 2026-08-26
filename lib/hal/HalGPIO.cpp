@@ -230,7 +230,8 @@ bool HalGPIO::wasHomeKeyLongPressed() const { return inputMgr.wasHomeKeyLongPres
 bool HalGPIO::needsOnScreenFrontChrome() const {
   // Soft Menu/Library/Recents/Read strip when there are no physical front keys.
   // X4 Pro has a capacitive Home pad and side L/R, but not Back/Confirm — Home
-  // stays global goHome; these pills restore the X3/X4 front-button actions.
+  // stays global goHome; these pills restore the X3/X4 front-button actions on
+  // home and lists. The reader page does not draw them (status bar owns that band).
   if (!hasTouch()) return false;
   return BoardConfig::ACTIVE.input.back < 0 && BoardConfig::ACTIVE.input.confirm < 0;
 }

@@ -173,6 +173,8 @@ bool MappedInputManager::hasTouch() const { return gpio.hasTouch(); }
 
 bool MappedInputManager::needsOnScreenFrontChrome() const { return gpio.needsOnScreenFrontChrome(); }
 
+void MappedInputManager::setSoftFrontChromeEnabled(const bool enabled) { softFrontChromeEnabled = enabled; }
+
 void MappedInputManager::rememberTouchHeldTime() const {
   touchHeldOverrideValid = true;
   touchHeldOverrideMs = gpio.lastTouchHeldMs();
@@ -461,7 +463,7 @@ namespace {
 // Soft front chrome (X4 Pro): map strip taps to the same slots BaseTheme paints
 // so Menu/Library/Recents/Read work without physical front keys.
 int softChromeReleasedSlot(const MappedInputManager& input, HalGPIO& gpio, const GfxRenderer& renderer) {
-  if (!gpio.needsOnScreenFrontChrome()) return -1;
+  if (!gpio.needsOnScreenFrontChrome() || !input.isSoftFrontChromeEnabled()) return -1;
   int tx = 0;
   int ty = 0;
   if (!input.wasScreenTapped(tx, ty)) return -1;

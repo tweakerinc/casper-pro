@@ -24,7 +24,12 @@ class MappedInputManager {
   bool isPressed(Button button) const;
   bool hasTouch() const;
   // Soft Menu/Library/Recents/Read strip when hardware has no front keys (X4 Pro).
+  // Home / lists draw it; the reader page does not (status bar owns that band).
   bool needsOnScreenFrontChrome() const;
+  // Reader page: do not treat status-bar taps as Back/Confirm/Left/Right.
+  // Menus keep the default (enabled). Pair with a scope guard around loop().
+  void setSoftFrontChromeEnabled(bool enabled);
+  bool isSoftFrontChromeEnabled() const { return softFrontChromeEnabled; }
   bool wasScreenTapped(int& x, int& y) const;
   bool wasScreenTouchDown(int& x, int& y) const;
   bool isScreenTouchHeld(int& x, int& y) const;
@@ -114,4 +119,5 @@ class MappedInputManager {
   mutable bool touchHeldOverrideValid = false;
   mutable unsigned long touchHeldOverrideMs = 0;
   mutable unsigned long touchHeldOverrideAt = 0;
+  bool softFrontChromeEnabled = true;
 };
