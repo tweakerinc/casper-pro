@@ -65,7 +65,11 @@ class EpdBus {
   // wakes exactly on the completion edge instead of polling every 1 ms. For the
   // refresh-completion wait: it confirms the waveform is running (short bounded
   // poll) before arming, so it is safe to call right after firing the refresh.
-  void waitRefreshComplete(const char* tag = nullptr);
+  // Returns false when BUSY never asserted (MASTER_ACTIVATION was a no-op).
+  bool waitRefreshComplete(const char* tag = nullptr);
+
+  // True when the last waitRefreshComplete() saw the pin enter the working level.
+  bool lastRefreshSawBusy() const { return _lastRefreshSawBusy; }
 
   // Instantaneous BUSY-pin read for non-blocking refresh polling. X3's
   // two-phase wait can't be captured in a single read; its terminal state is
@@ -133,6 +137,7 @@ class EpdBus {
   BusyPolarity _busy = BusyPolarity::ActiveHigh;
   uint32_t _spiHz = 40000000;
   int8_t _coCs = -1;
+  bool _lastRefreshSawBusy = false;
 };
 
 }  // namespace freeink

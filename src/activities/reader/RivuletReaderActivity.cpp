@@ -3806,7 +3806,8 @@ void RivuletReaderActivity::render(RenderLock&& lock) {
       // Status bar stays BW chrome (same as classic — not re-AA'd into greys).
     });
   } else {
-    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh_);
+    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh_, /*async=*/false,
+                                        /*forceFast=*/preferFastFirst && hadOpenHints);
   }
   if (hadOpenHints || preferFastFirst) {
     LOG_INF("RVR", "first_ink refresh=%lums preferFast=%d aa=%d wall=%lums",

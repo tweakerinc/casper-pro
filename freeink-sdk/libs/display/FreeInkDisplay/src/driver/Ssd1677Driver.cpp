@@ -182,13 +182,25 @@ PanelGeometry Ssd1677Driver::geometry() const { return {_w, _h, _wb, _bufferSize
 void Ssd1677Driver::begin(EpdBus& bus) {
   bus.reset();
   initController(bus);
+  if (BoardConfig::isX4Pro()) {
+    // Analog/clock must be up before sleep_frame RED seed or the first FAST.
+    // 0xC7 while still in DSLP is a no-op: BUSY never rises, wallpaper stays.
+    powerOn(bus);
+  }
 }
 
 void Ssd1677Driver::initController(EpdBus& bus) {
   constexpr uint8_t TEMP_SENSOR_INTERNAL = 0x80;
+  const bool proOemInit = BoardConfig::isX4Pro();
 
   bus.cmd(CMD_SOFT_RESET);
-  bus.waitBusy(" CMD_SOFT_RESET");
+  if (proOemInit) {
+    // OEM INIT: SW RESET 0x12 then delay(10), not a BUSY wait. After DSLP the
+    // pin is not trustworthy yet; waitBusy here either no-ops or wedges wake.
+    delay(10);
+  } else {
+    bus.waitBusy(" CMD_SOFT_RESET");
+  }
 
   bus.cmd(CMD_TEMP_SENSOR_CONTROL);
   bus.data(TEMP_SENSOR_INTERNAL);
@@ -211,13 +223,18 @@ void Ssd1677Driver::initController(EpdBus& bus) {
 
   setRamArea(bus, 0, 0, _w, _h);
 
-  bus.cmd(CMD_AUTO_WRITE_BW_RAM);
-  bus.data(0xF7);
-  bus.waitBusy(" CMD_AUTO_WRITE_BW_RAM");
+  if (!proOemInit) {
+    // C3 X4: fill RAM with a regular pattern. Pro OEM INIT does not do this —
+    // AUTO_WRITE 0xF7 after deep sleep is the same hanging/no-op FULL sequence
+    // skipInitialResync exists to avoid on first paint.
+    bus.cmd(CMD_AUTO_WRITE_BW_RAM);
+    bus.data(0xF7);
+    bus.waitBusy(" CMD_AUTO_WRITE_BW_RAM");
 
-  bus.cmd(CMD_AUTO_WRITE_RED_RAM);
-  bus.data(0xF7);
-  bus.waitBusy(" CMD_AUTO_WRITE_RED_RAM");
+    bus.cmd(CMD_AUTO_WRITE_RED_RAM);
+    bus.data(0xF7);
+    bus.waitBusy(" CMD_AUTO_WRITE_RED_RAM");
+  }
 
   _isScreenOn = false;
   // Override boards can't use _isScreenOn to detect a cold start (their fast
@@ -377,7 +394,15 @@ void Ssd1677Driver::powerOn(EpdBus& bus) {
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
   bus.data(0xC0);  // CLOCK_ON | ANALOG_ON
   bus.cmd(CMD_MASTER_ACTIVATION);
-  bus.waitBusy("gray power-on");
+  if (BoardConfig::isX4Pro()) {
+    // waitBusy() returns immediately while the pin is still idle LOW, which is
+    // the post-DSLP state. Analog never finishes coming up, then 0xC7 is a
+    // no-op (BUSY never rises, wallpaper stays, frontlight looks alive).
+    // waitRefreshComplete() requires the working edge before success.
+    if (!bus.waitRefreshComplete("power-on")) return;
+  } else {
+    bus.waitBusy("gray power-on");
+  }
   _isScreenOn = true;
 }
 
@@ -452,12 +477,13 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     powerOn(bus);
   }
 
-  setRamArea(bus, 0, 0, _w, _h);
-
-  if (mode != RefreshMode::Fast) {
-    writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
-    writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
-  } else {
+  const auto writePlanes = [&]() {
+    setRamArea(bus, 0, 0, _w, _h);
+    if (mode != RefreshMode::Fast) {
+      writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
+      writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+      return;
+    }
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
     // Sequences whose 0x22 value includes power-off bits (Pro FAST 0xC7,
     // Sticky 0xFF, …) shut the controller down after each refresh. In
@@ -475,9 +501,25 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     }
     // else: single-buffer + non-power-down FAST (X4 0xFC) — RED still holds
     // the post-resync baseline from the last refresh; leave it alone.
-  }
+  };
 
+  writePlanes();
   refresh(bus, mode, turnOff, async);
+
+  // After deep sleep, 0xC7 can fire while analog is still down: BUSY never
+  // asserts, waitRefreshComplete returns in ~20 ms, glass still shows the
+  // sleep wallpaper, then the host turns the frontlight on. HW reset + OEM
+  // init + powerOn, rewrite, FAST again. Never 0xF7 / AUTO_WRITE FULL.
+  if (!async && !turnOff && BoardConfig::isX4Pro() && !bus.lastRefreshSawBusy()) {
+    if (Serial) {
+      Serial.printf("[%lu]   SSD1677: FAST no BUSY after sleep — HW reset + retry\n", millis());
+    }
+    bus.reset();
+    initController(bus);
+    powerOn(bus);
+    writePlanes();
+    refresh(bus, mode, turnOff, /*async=*/false);
+  }
 
   // Stock X4 syncs both controller RAM planes after activation. Do the same in
   // single-buffer mode so the next differential update starts from a matched

@@ -293,7 +293,8 @@ inline bool isTouchMenuGesture(const MappedInputManager& input) {
 // Soft greyscale-base (X3): also used by UiGhostPolicy menu opens (same bank).
 // Async: starts FAST/HALF non-blocking when possible; X3 soft is blocking.
 // Caller must not touch FB until waitRefreshComplete after async FAST/HALF.
-inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh, bool async = false) {
+inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh, bool async = false,
+                                    bool forceFast = false) {
   const int freq = SETTINGS.getRefreshFrequency();  // -1 = Never
   const bool disabled = (freq == CasperSettings::REFRESH_COUNTDOWN_DISABLED);
   const bool forceScrub = (pagesUntilFullRefresh == CasperSettings::REFRESH_COUNTDOWN_FORCE_SCRUB);
@@ -305,7 +306,9 @@ inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntil
   const bool tempInvert = readerOnlyDarkPaint() && !renderer.getInvertOnDisplay();
   if (tempInvert) renderer.invertScreen();
 
-  if (maintenanceDue || forceScrub) {
+  // forceFast: sleep-wake first ink. Pro ordinary turns use HALF (0xF7), which
+  // after DSLP hangs BUSY or develops no pixels — wallpaper stays, LEDs come on.
+  if (!forceFast && (maintenanceDue || forceScrub)) {
     // Soft greyscale-base reinforce is X3-only (UC8253 mid-bank). X4 / X4 Pro
     // (SSD1677 / UC8179) use a real HALF scrub — OEM Pro FAST is 0xC7 and still
     // needs periodic HALF to clear residual (softer than Full, not a soft-pull).
@@ -321,28 +324,20 @@ inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntil
     if (pagesUntilFullRefresh < 1 && !disabled) pagesUntilFullRefresh = 1;
   } else {
 #if FREEINK_DEVICE_X4PRO
-    // Pro field bug: FAST often advanced reader state without updating glass
-    // (only long-press force scrub revealed the new page). Prefer HALF which
-    // rewrites both controller planes absolutely. Driver also force-redrives
-    // FAST as a belt-and-suspenders; HALF is the reliable page-turn path.
-    if (async) {
-      renderer.displayBufferAsync(HalDisplay::HALF_REFRESH);
-    } else {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    }
-    if (!disabled && pagesUntilFullRefresh > 1) {
-      pagesUntilFullRefresh--;
-    }
+    // Ordinary Pro turns stay HALF (absolute planes). Wake first ink must be
+    // FAST 0xC7 — Pro HALF is OEM 0xF7, which hangs or paints nothing after sleep.
+    const HalDisplay::RefreshMode mode = forceFast ? HalDisplay::FAST_REFRESH : HalDisplay::HALF_REFRESH;
 #else
+    const HalDisplay::RefreshMode mode = HalDisplay::FAST_REFRESH;
+#endif
     if (async) {
-      renderer.displayBufferAsync(HalDisplay::FAST_REFRESH);
+      renderer.displayBufferAsync(mode);
     } else {
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+      renderer.displayBuffer(mode);
     }
     if (!disabled && pagesUntilFullRefresh > 1) {
       pagesUntilFullRefresh--;
     }
-#endif
   }
 
   if (tempInvert) renderer.invertScreen();

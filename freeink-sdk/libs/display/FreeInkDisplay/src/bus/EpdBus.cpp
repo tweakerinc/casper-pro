@@ -99,12 +99,11 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     gpio_hold_dis(static_cast<gpio_num_t>(pins.rst));
     pinMode(pins.rst, OUTPUT);
   }
-  // ActiveLow (open-drain, pull-up idle HIGH): INPUT_PULLUP.
-  // ActiveHigh (SSD1677 X4/Pro): idle is LOW, busy HIGH. Without a pull-down the
-  // pin can float HIGH → waitBusy() always hits the full timeout (~30s) and the
-  // UI freezes (moon stuck / light menu hangs / power feels dead). Observed on
-  // X4 Pro field serial: "Wait complete: refresh (30001 ms)" every paint.
-  pinMode(pins.busy, busy == BusyPolarity::ActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
+  // ActiveHigh (SSD1677 X4/Pro): idle LOW, busy HIGH — pulldown so a floating
+  // pin cannot look busy forever ("Wait complete: refresh (30001 ms)").
+  // ActiveLow and X3TwoPhase idle HIGH — pullup. Pulldown on X3TwoPhase made
+  // Pro UC8179 look busy on every wait (5s timeout, glass never left wallpaper).
+  pinMode(pins.busy, busy == BusyPolarity::ActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
   if (_coCs >= 0) {
     pinMode(_coCs, OUTPUT);
     digitalWrite(_coCs, HIGH);
@@ -288,7 +287,8 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
   }
 }
 
-void EpdBus::waitRefreshComplete(const char* tag) {
+bool EpdBus::waitRefreshComplete(const char* tag) {
+  _lastRefreshSawBusy = false;
   // A host that installed a busy-wait slice hook (e.g. CrossPoint light-sleeping
   // through the refresh) must keep the polling path: waitBusy() invokes the slice
   // hook on each idle step, while this ISR path sleeps the task on a semaphore and
@@ -300,14 +300,16 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   // nothing — fall back to the hooked poll.
   if (_busyWaitSliceHook != nullptr) {
     waitBusy(tag);
-    return;
+    _lastRefreshSawBusy = true;
+    return true;
   }
   // ISR-driven completion wait: sleep the task on a semaphore and wake on the
   // exact BUSY completion edge, instead of polling every 1 ms. Falls back to
   // polling if the semaphore could not be created.
   if (!s_epdRefreshDone) {
     waitBusy(tag);
-    return;
+    _lastRefreshSawBusy = true;
+    return true;
   }
   // Levels by polarity. CHANGE is armed so both the delayed BUSY assertion and
   // its completion are event-driven; the task never polls during either phase.
@@ -323,15 +325,19 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   if (!sawWorking) {
     // BUSY assertion can trail MASTER_ACTIVATION by a few microseconds. Sleep
     // until an edge instead of delay(1) polling. No edge in 20 ms means the
-    // command was a no-op or its entire pulse completed before we armed.
+    // command was a no-op — analog still down after deep sleep, glass unchanged.
     if (xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(20)) != pdTRUE) {
       detachInterrupt(digitalPinToInterrupt(_pins.busy));
-      return;
+      if (tag && Serial) {
+        Serial.printf("[%lu]   Wait complete: %s (no BUSY — refresh no-op)\n", millis(), tag);
+      }
+      return false;
     }
     sawWorking = digitalRead(_pins.busy) == workingLevel;
     if (!sawWorking && digitalRead(_pins.busy) == doneLevel) {
       detachInterrupt(digitalPinToInterrupt(_pins.busy));
-      return;
+      _lastRefreshSawBusy = true;
+      return true;
     }
   }
 
@@ -344,11 +350,13 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   if (hook && _busyWaitEndHook != nullptr) _busyWaitEndHook();
 
   detachInterrupt(digitalPinToInterrupt(_pins.busy));
+  _lastRefreshSawBusy = true;
   if (tag && Serial) {
     const unsigned long ms = millis() - start;
     Serial.printf("[%lu]   Wait complete: %s (%lu ms)%s pin=%d\n", millis(), tag, ms,
                   ms >= BUSY_WAIT_MAX_MS ? " TIMEOUT" : "", digitalRead(_pins.busy));
   }
+  return true;
 }
 
 void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {

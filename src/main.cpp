@@ -695,6 +695,10 @@ void setup() {
       break;
     case BootResume::QuickResume: {
       // One-shot flag: re-arm cold-boot splash (saved after first ink on QR→book).
+      // Moon chrome is only on glass after a QR (last-frame) sleep. Wallpaper
+      // sleep must not window-FAST moon→dots: that 0xC7 often no-ops after
+      // DSLP, and there is no moon to replace on a wallpaper plate.
+      const bool hadQrMoon = APP_STATE.lastSleepRenderedQuickResume;
       APP_STATE.showBootScreen = true;
       APP_STATE.lastSleepRenderedQuickResume = false;
       // Resume destination from sleep: book, book menu, settings, or home.
@@ -717,9 +721,9 @@ void setup() {
         if (QrTimingLog::active()) QrTimingLog::line("after loadSleepFrameBuffer");
         // Re-seed controller "previous" plane from the restored FB (X3 DTM1 / X4 RED).
         renderer.cleanupGrayscaleWithFrameBuffer();
-        // Moon → dots on every wake, including QR→book. Skipping this left the
-        // moon frozen on glass with no sign the press registered.
-        {
+        // Moon → dots only when QR sleep actually drew the moon. Wallpaper
+        // wake must keep the glass still until Home/reader FAST replaces it.
+        if (hadQrMoon) {
           const bool readerOnlyDarkWake =
               SETTINGS.readerDarkMode != 0 && SETTINGS.darkModeReaderOnly != 0;
           SleepChromeIcon::replaceAtTopChrome(renderer, LoadingIcon, LOADINGICON_WIDTH, LOADINGICON_HEIGHT);
@@ -736,6 +740,8 @@ void setup() {
           if (QrTimingLog::active()) {
             QrTimingLog::line("after moon→dots (openBook=%d)", qrOpenBook ? 1 : 0);
           }
+        } else if (QrTimingLog::active()) {
+          QrTimingLog::line("wallpaper wake — skip moon→dots");
         }
       } else {
         // Never show BootActivity here — glass already holds wallpaper/moon through
@@ -756,6 +762,16 @@ void setup() {
       activityManager.goToBoot();
       break;
   }
+
+  auto retryWakeFirstPaint = [](const char* where, uint32_t waitMs) -> bool {
+    // Do not display.begin() here: the render task may still be inside
+    // waitRefreshComplete. Driver already HW-resets when FAST was a no-op.
+    SystemLog::logCritical("QR", "%s first paint timeout — reinit touch, retry FAST", where);
+    gpio.reinitTouch();
+    UiGhostPolicy::clearHardScrub();
+    activityManager.requestUpdate(/*immediate=*/true);
+    return activityManager.requestUpdateAndWait(waitMs);
+  };
 
   if (recoveryFirmwareMode) {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
@@ -784,8 +800,7 @@ void setup() {
     // Cap wait: stuck panel BUSY used to freeze boot with moon still on glass.
     // Prefer shorter wait — FULL after deep sleep can sit on BUSY up to ~30s.
     if (!activityManager.requestUpdateAndWait(/*timeoutMs=*/6000)) {
-      SystemLog::logCritical("QR", "Settings first paint timeout — reinit touch, continue");
-      gpio.reinitTouch();
+      (void)retryWakeFirstPaint("Settings", 4000);
     }
     if (QrTimingLog::active()) {
       QrTimingLog::line("QR → Settings");
@@ -810,11 +825,7 @@ void setup() {
       activityManager.loop();
       // Soft first paint (Home uses FAST after QR seed); avoid long FULL BUSY hang.
       if (!activityManager.requestUpdateAndWait(/*timeoutMs=*/6000)) {
-        SystemLog::logCritical("QR", "Home first paint timeout — reinit touch, force soft open");
-        gpio.reinitTouch();
-        UiGhostPolicy::clearHardScrub();
-        activityManager.requestUpdate(/*immediate=*/true);
-        (void)activityManager.requestUpdateAndWait(/*timeoutMs=*/4000);
+        (void)retryWakeFirstPaint("Home", 4000);
       }
       if (QrTimingLog::active()) {
         QrTimingLog::line("QR → Home first paint");
@@ -856,7 +867,10 @@ void setup() {
       activityManager.loop();
       if (QrTimingLog::active()) QrTimingLog::line("after activityManager.loop drain");
       // Never wait forever: hung BUSY left moon + frontlight with no UI.
-      const bool inkOk = activityManager.requestUpdateAndWait(/*timeoutMs=*/8000);
+      bool inkOk = activityManager.requestUpdateAndWait(/*timeoutMs=*/8000);
+      if (!inkOk) {
+        inkOk = retryWakeFirstPaint("book", 5000);
+      }
       if (QrTimingLog::active()) {
         QrTimingLog::line(inkOk ? "after first_ink wait" : "first_ink TIMEOUT — fall back Home");
       }
