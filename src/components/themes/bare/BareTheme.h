@@ -18,7 +18,7 @@ constexpr ThemeMetrics makeValues() {
   v.homeRecentBooksCount = 1;
   v.homeContinueReadingInMenu = false;
   v.homeMenuTopOffset = 0;
-  v.buttonHintsHeight = 48;  // room for outlined Pro pills / larger label text
+  v.buttonHintsHeight = 48;  // room for UI_10 footer captions
   return v;
 }
 

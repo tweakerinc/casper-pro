@@ -19,7 +19,7 @@ constexpr ThemeMetrics makeValues() {
   v.homeRecentBooksCount = 1;
   v.homeContinueReadingInMenu = false;
   v.homeMenuTopOffset = 0;
-  // Room for UI_12 footer (outlined pills on Pro; text-only on button devices).
+  // Room for UI_10 (12 pt) footer captions in four equal columns.
   v.buttonHintsHeight = 48;
   return v;
 }
@@ -32,8 +32,7 @@ constexpr int homeCoverImageHeight = 525;
 
 class MinimalTheme : public LyraTheme {
  public:
-  // Footer: four equal columns. X4 Pro (no front keys) draws outlined pills;
-  // devices with physical keys stay text-only. Label order is the activity's.
+  // Footer: four equal text-only columns (no boxes, no bold). Label order is the activity's.
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                        const char* btn4) const override;
 };
