@@ -65,6 +65,7 @@ class FrontlightManager {
 #endif
 
   bool _begun = false;
+  bool _pwmApplied = false;
   uint8_t _brightness = 0;
   uint8_t _lastBrightness = 50;
   uint8_t _warmPercent = 50;  // neutral by default

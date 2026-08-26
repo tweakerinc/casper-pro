@@ -72,6 +72,7 @@ void FrontlightManager::begin() {
   if (fl.viaPm1Pwm) {
     pm1FrontlightAttach(fl.pwmFrequency);
     _begun = true;
+    _pwmApplied = false;
     setBrightness(0);
     return;
   }
@@ -89,6 +90,7 @@ void FrontlightManager::begin() {
     attachChannel(fl.gpioWarm, LEDC_CH_WARM, fl.pwmFrequency, fl.pwmResolutionBits);
   }
   _begun = true;
+  _pwmApplied = false;
   setBrightness(0);
 #endif
 }
@@ -158,9 +160,17 @@ void FrontlightManager::apply() {
 void FrontlightManager::setBrightness(uint8_t percent) {
 #if FREEINK_CAP_FRONTLIGHT
   if (percent > 100) percent = 100;
-  _brightness = percent;
   if (percent > 0) _lastBrightness = percent;
+  if (!_begun) {
+    _brightness = percent;
+    return;
+  }
+  // Same percent: skip LEDC rewrite. Re-driving the dual warm/cool mix on
+  // unrelated taps (settings flush, apply-from-settings) visibly shifts color.
+  if (_pwmApplied && _brightness == percent) return;
+  _brightness = percent;
   apply();
+  _pwmApplied = true;
 #else
   (void)percent;
 #endif
@@ -171,10 +181,17 @@ void FrontlightManager::on() { setBrightness(_lastBrightness); }
 
 void FrontlightManager::setColorTemperature(uint8_t warmPercent) {
 #if FREEINK_CAP_FRONTLIGHT
-  _warmPercent = warmPercent > 100 ? 100 : warmPercent;
+  if (warmPercent > 100) warmPercent = 100;
+  if (!_begun) {
+    _warmPercent = warmPercent;
+    return;
+  }
+  if (_pwmApplied && _warmPercent == warmPercent) return;
+  _warmPercent = warmPercent;
   // Only re-drives hardware when a warm channel exists; on single-channel boards this just
   // records the request (apply() ignores _warmPercent without a second channel).
   apply();
+  _pwmApplied = true;
 #else
   (void)warmPercent;
 #endif
