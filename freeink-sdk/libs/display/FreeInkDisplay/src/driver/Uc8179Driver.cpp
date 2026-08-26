@@ -259,7 +259,14 @@ void Uc8179Driver::requestResync(uint8_t settlePasses) {
   _needFullClear = true;  // next refresh does a full flash to clear ghosting
 }
 
-void Uc8179Driver::skipInitialResync() { _needFullClear = false; }
+void Uc8179Driver::skipInitialResync() {
+  _needFullClear = false;
+  // Match UC8279: caller asserts the panel already holds a valid frame (sleep
+  // image). Without _oldPlaneValid the first FAST is still an OTP full flash,
+  // which hangs BUSY after deep sleep (frontlight on, glass frozen). Pro FAST
+  // then rewrites DTM1 inverted so every pixel redrives even if DTM1 was empty.
+  _oldPlaneValid = true;
+}
 
 void Uc8179Driver::deepSleep(EpdBus& bus) {
   if (_isScreenOn) {

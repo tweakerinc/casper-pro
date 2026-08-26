@@ -326,10 +326,9 @@ static bool loadSleepFrameBuffer() {
     Storage.remove(path);
     return false;
   }
-  Storage.remove(path);
-  if (path != SLEEP_FRAME_FILE && Storage.exists(SLEEP_FRAME_FILE)) {
-    Storage.remove(SLEEP_FRAME_FILE);
-  }
+  // Keep the file: a hung first paint used to delete it, so the retry wake had
+  // no RED/DTM1 seed and FAST-diff'd against empty controller RAM (glass stuck).
+  // Next sleep overwrites; a size mismatch above still removes a corrupt file.
   return true;
 }
 

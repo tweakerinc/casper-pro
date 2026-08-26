@@ -572,6 +572,8 @@ void Ssd1677Driver::seedPreviousFrame(EpdBus& bus, const uint8_t* buf) {
   // Write the frame into RED (the differential "old frame" plane) with no refresh —
   // identical to the RED write display() does for `prev`, so the next prev==nullptr
   // fast refresh diffs the new frame against this baseline instead of a stale one.
+  // Pro FAST 0xC7 powers the controller down; RAM writes while off are dropped.
+  powerOn(bus);
   setRamArea(bus, 0, 0, _w, _h);
   writeRam(bus, CMD_WRITE_RAM_RED, buf, _bufferSize);
 }
@@ -636,6 +638,8 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 
 void Ssd1677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   if (!bw) return;
+  // Same Pro self-power-down caveat as seedPreviousFrame / displayImpl.
+  powerOn(bus);
   setRamArea(bus, 0, 0, _w, _h);
   writeRam(bus, CMD_WRITE_RAM_RED, bw, _bufferSize);
   // The restored BW frame in RED RAM *is* the clean differential baseline for the

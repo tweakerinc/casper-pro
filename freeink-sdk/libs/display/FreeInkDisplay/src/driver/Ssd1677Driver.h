@@ -84,6 +84,13 @@ class Ssd1677Driver : public PanelDriver {
 
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
+  // Seamless QR / silent reboot: do not promote the first FAST to HALF/FULL.
+  // Pro HALF is OEM 0xF7 — same sequence as FULL — and after deep sleep that
+  // waveform either hangs BUSY or develops no pixels (frontlight on, glass
+  // still the sleep image, long-press refresh also dead). FAST 0xC7 with the
+  // inverted-RED redrive in displayImpl() is the working first paint.
+  void skipInitialResync() override { _needsInitialFull = false; }
+
   bool supportsStripGrayscale() const override { return true; }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;

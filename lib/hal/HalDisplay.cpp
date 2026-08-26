@@ -21,7 +21,10 @@ void HalDisplay::begin(bool seamless) {
   if (seamless) {
     // Defuse forced first-clean so Quick Resume / silent reboot can FAST-diff:
     //   X3: _x3InitialFullSyncsRemaining
-    //   X4: SSD1677 _needsInitialFull (otherwise first FAST → HALF ~1.8s)
+    //   SSD1677: _needsInitialFull (otherwise first FAST → HALF; Pro HALF is
+    //            OEM 0xF7 FULL — hangs or paints nothing after deep sleep)
+    //   UC8179 / UC8279-X4: _needFullClear + _oldPlaneValid (otherwise first
+    //            FAST is still an OTP full flash with the same hang)
     // Skips the wakeup-gated requestResync() below for the same reason.
     // Caller must re-seed the differential baseline before the first FAST.
     einkDisplay.skipInitialResync();
