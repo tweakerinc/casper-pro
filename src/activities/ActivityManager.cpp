@@ -221,14 +221,15 @@ void ActivityManager::loop() {
 
     // Left-edge brightness: long-press to arm (level unchanged), then relative drag.
     // Finger up from arm point → brighter; down → dimmer. No jump to absolute Y.
-    // ~45% of screen height of drag covers full 0–100% so any start point can
-    // still reach the ends. Brightness only (never color temperature).
-    if (frontlight().present() && currentActivity->name != "FrontlightQuick") {
-      static bool leftBriActive = false;
-      static bool leftBriDragging = false;
-      static int leftBriAnchorY = 0;
-      static int leftBriAnchor = 40;
-      static int leftBriLastApplied = -1;
+    // Only on the book page — menus/lists use the same left edge for row taps,
+    // and the dual-LED mix flickered when those holds also rewrote PWM.
+    static bool leftBriActive = false;
+    static bool leftBriDragging = false;
+    static int leftBriAnchorY = 0;
+    static int leftBriAnchor = 40;
+    static int leftBriLastApplied = -1;
+    if (frontlight().present() && currentActivity->isReaderActivity() &&
+        currentActivity->name != "FrontlightQuick") {
       int tx = 0, ty = 0;
       const int pageW = renderer.getScreenWidth();
       const int pageH = renderer.getScreenHeight();
@@ -275,6 +276,10 @@ void ActivityManager::loop() {
         leftBriLastApplied = -1;
         return;
       }
+    } else if (leftBriActive || leftBriDragging) {
+      leftBriActive = false;
+      leftBriDragging = false;
+      leftBriLastApplied = -1;
     }
 #endif
 
