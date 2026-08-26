@@ -264,24 +264,20 @@ int lyraListRowHeightForLines(const GfxRenderer& renderer, const bool hasSubtitl
   return std::max(baseline, computed);
 }
 
-int lyraListRowHeight(const GfxRenderer& renderer, const bool hasSubtitle) {
-  // Navigation / touch use single-line height; paint path sizes per item.
-  return lyraListRowHeightForLines(renderer, hasSubtitle, 1);
-}
 }  // namespace
 
 int LyraTheme::getListRowStep(bool hasSubtitle) const {
   // Approximate without GfxRenderer (touch hit + page-size math). Must stay ≥
-  // painted single-line row height or taps land one row too low (Size 10→12).
+  // painted single-line row height or taps land one row too low.
   // Painting still measures per item for multi-line wrap.
   int rowHeight = hasSubtitle ? LyraMetrics::values.listWithSubtitleRowHeight : LyraMetrics::values.listRowHeight;
   // Match compute path: larger menu list fonts grow title line height.
   switch (SETTINGS.menuFontSize) {
     case CasperSettings::MENU_FONT_XSMALL:
-      rowHeight = std::max(26, rowHeight - 4);
-      break;
     case CasperSettings::MENU_FONT_SMALL:
-      rowHeight = std::max(28, rowHeight - 2);
+      // 10/12 pt still paint at listRowHeight (kLyraRowPad keeps them on the
+      // baseline). Shrinking the hit step below that made chapter taps land
+      // two rows late (e.g. tap 27 → open 29).
       break;
     case CasperSettings::MENU_FONT_MEDIUM:
       rowHeight += 8;  // ~14 pt Source Serif list titles
@@ -314,8 +310,7 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
   (void)rowCentered;
 
   const bool hasSubtitleCb = (rowSubtitle != nullptr);
-  const int singleRowH = lyraListRowHeight(renderer, hasSubtitleCb);
-  int pageItems = singleRowH > 0 ? std::max(1, rect.height / singleRowH) : 1;
+  const int pageItems = getListPageItems(rect.height, hasSubtitleCb);
 
   const int totalPages = (itemCount + pageItems - 1) / pageItems;
   if (totalPages > 1) {

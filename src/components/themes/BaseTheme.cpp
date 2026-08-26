@@ -542,10 +542,7 @@ int BaseTheme::getListRowStep(bool hasSubtitle) const {
   int rowHeight = hasSubtitle ? BaseMetrics::values.listWithSubtitleRowHeight : BaseMetrics::values.listRowHeight;
   switch (SETTINGS.menuFontSize) {
     case CasperSettings::MENU_FONT_XSMALL:
-      rowHeight = std::max(26, rowHeight - 4);
-      break;
     case CasperSettings::MENU_FONT_SMALL:
-      rowHeight = std::max(28, rowHeight - 2);
       break;
     case CasperSettings::MENU_FONT_MEDIUM:
       rowHeight += 8;
