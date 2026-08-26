@@ -339,11 +339,13 @@ HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
       (wakeupCause == ESP_SLEEP_WAKEUP_GPIO || wakeupCause == ESP_SLEEP_WAKEUP_EXT1)) {
     return WakeupReason::PowerButton;
   }
-  // X4 on battery: GPIO13 power latch cuts MCU power in sleep, so wake is a
-  // cold ESP_RST_POWERON (not DEEPSLEEP). Without USB that is still a power-
-  // button wake and must QuickResume like v0.1.3 — not Splash/"reboot".
-  // Flash/USB paths below keep sticky lastSleepFromReader from auto-opening a book.
-  if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnected) {
+  // C3 X4 on battery: GPIO13 latch cuts MCU power in sleep, so a power-button
+  // wake is ESP_RST_POWERON (not DEEPSLEEP). X4 Pro keeps GPIO1 HIGH and wakes
+  // via EXT1 / ESP_RST_DEEPSLEEP. usbDetect is unassigned on Pro, so
+  // isUsbConnected() is always false — treating POWERON as PowerButton made a
+  // USB unplug/replug skip the boot logo and FAST-flash Home.
+  if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnected &&
+      !BoardConfig::isX4Pro()) {
     return WakeupReason::PowerButton;
   }
 #ifdef ESP_RST_USB

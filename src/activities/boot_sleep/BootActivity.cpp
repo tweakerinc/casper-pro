@@ -1,6 +1,8 @@
 #include "BootActivity.h"
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <I18n.h>
 
 #include "fontIds.h"
@@ -25,8 +27,7 @@ void BootActivity::onEnter() {
   const int versionY = pageHeight - renderer.getLineHeight(SMALL_FONT_ID) - 20;
   renderer.drawCenteredText(SMALL_FONT_ID, versionY, CASPER_VERSION, true);
 
-  // X4 Pro: first paint must use a full OTP waveform so the glass actually
-  // updates (FAST with the wrong 0x22 sequence can finish in <50 ms with no
-  // visible change). HALF maps to a clean full sequence on Pro.
-  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+  // Pro FULL/HALF is OEM 0xF7 and often develops nothing after USB/reset
+  // (no logo, then Home flashes in). FAST 0xC7 redrives every pixel.
+  renderer.displayBuffer(BoardConfig::isX4Pro() ? HalDisplay::FAST_REFRESH : HalDisplay::FULL_REFRESH);
 }
