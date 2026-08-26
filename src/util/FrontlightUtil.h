@@ -12,6 +12,8 @@ inline FrontlightManager& frontlight() {
   return fl;
 }
 
+inline int leftEdgeFrontlightWidth(int pageW) { return std::max(24, pageW / 8); }
+
 // Push SETTINGS → LEDs (on/off + brightness + CT mix). Single source of truth.
 inline void applyFrontlightFromSettings() {
   auto& fl = frontlight();

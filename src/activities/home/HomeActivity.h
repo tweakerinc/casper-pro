@@ -217,6 +217,7 @@ class HomeActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool isHomeActivity() const override { return true; }
+  bool allowLeftEdgeFrontlight() const override;
   // Drop large cover snapshot while Home is parked under the reader (snappy Back
   // keeps Home on the stack — without this, ~10–40 KB stays reserved all session).
   void releaseHeavyResourcesForReader();

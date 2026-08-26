@@ -51,6 +51,8 @@ class Activity {
   virtual bool handleForcedRefresh() { return false; }
   virtual bool isHomeActivity() const { return false; }
   virtual bool isSettingsActivity() const { return false; }
+  // Home clock/cover (not the in-home Menu overlay): left-edge brightness drag.
+  virtual bool allowLeftEdgeFrontlight() const { return false; }
   // Reader book menu (EpubReaderMenuActivity) — QR can reopen it after the book.
   virtual bool isReaderMenuActivity() const { return false; }
   // Flush book progress / settings before deep sleep while the activity is still alive.

@@ -221,19 +221,19 @@ void ActivityManager::loop() {
 
     // Left-edge brightness: long-press to arm (level unchanged), then relative drag.
     // Finger up from arm point → brighter; down → dimmer. No jump to absolute Y.
-    // Only on the book page — menus/lists use the same left edge for row taps,
-    // and the dual-LED mix flickered when those holds also rewrote PWM.
+    // Home clock/cover and the reader page only — menus/lists use that edge for
+    // row taps, and re-PWM on those holds flickered the dual-LED mix.
     static bool leftBriActive = false;
     static bool leftBriDragging = false;
     static int leftBriAnchorY = 0;
     static int leftBriAnchor = 40;
     static int leftBriLastApplied = -1;
-    if (frontlight().present() && currentActivity->isReaderActivity() &&
-        currentActivity->name != "FrontlightQuick") {
+    if (frontlight().present() && currentActivity->name != "FrontlightQuick" &&
+        (currentActivity->isReaderActivity() || currentActivity->allowLeftEdgeFrontlight())) {
       int tx = 0, ty = 0;
       const int pageW = renderer.getScreenWidth();
       const int pageH = renderer.getScreenHeight();
-      const int edgeW = std::max(24, pageW / 8);
+      const int edgeW = leftEdgeFrontlightWidth(pageW);
       constexpr int kDragSlopPx = 12;
 
       if (!leftBriActive) {

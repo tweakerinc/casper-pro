@@ -38,6 +38,7 @@
 #include "components/themes/bare/BareTheme.h"
 #include "components/themes/penumbra/PenumbraTheme.h"
 #include "fontIds.h"
+#include "util/FrontlightUtil.h"
 #include "util/SystemLog.h"
 #include "util/UiGhostPolicy.h"
 
@@ -499,6 +500,11 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   }
   (void)showingLoading;
   (void)anyNeedWork;
+}
+
+bool HomeActivity::allowLeftEdgeFrontlight() const {
+  // In-home Menu list uses the left edge for row taps — brightness stays off.
+  return !minimalMenuOpen;
 }
 
 void HomeActivity::onEnter() {
@@ -1648,6 +1654,7 @@ void HomeActivity::loop() {
         const int listTop = hit.valid ? hit.underTop : (midY + 8);
         const int listBottom = hit.valid ? hit.underBottom : contentBottom;
         const int listH = std::max(1, listBottom - listTop);
+        const int edgeW = leftEdgeFrontlightWidth(pageW);
 
         auto recentsRowAtY = [&](const int y) -> int {
           // Returns book index, penumbraRecentsListCount() for View All, or -1.
@@ -1669,8 +1676,9 @@ void HomeActivity::loop() {
         };
 
         // Long-press book title or a recents row → quick action menu.
+        // Leave the left brightness strip alone (ActivityManager owns that drag).
         int lpx = 0, lpy = 0;
-        if (mappedInput.wasTouchLongPress(lpx, lpy) && lpy >= listTop && lpy < listBottom) {
+        if (mappedInput.wasTouchLongPress(lpx, lpy) && lpx >= edgeW && lpy >= listTop && lpy < listBottom) {
           if (PenumbraThemeUi::isRecentsUnderPanel()) {
             const int row = recentsRowAtY(lpy);
             const int books = penumbraRecentsListCount();
@@ -1688,14 +1696,14 @@ void HomeActivity::loop() {
 
         if (PenumbraThemeUi::usesProgressFace()) {
           // Upper half is the Now Reading title/author block.
-          if (mappedInput.wasTapInRect(0, contentTop, pageW, std::max(1, midY - contentTop))) {
+          if (mappedInput.wasTapInRect(edgeW, contentTop, pageW - edgeW, std::max(1, midY - contentTop))) {
             openLastRead();
             return;
           }
         }
         if (PenumbraThemeUi::isRecentsUnderPanel()) {
           int tx = 0, ty = 0;
-          if (mappedInput.wasScreenTapped(tx, ty) && ty >= listTop && ty < listBottom) {
+          if (mappedInput.wasScreenTapped(tx, ty) && tx >= edgeW && ty >= listTop && ty < listBottom) {
             const int row = recentsRowAtY(ty);
             const int books = penumbraRecentsListCount();
             if (row == books) {
@@ -1710,21 +1718,24 @@ void HomeActivity::loop() {
             }
           }
         } else if (PenumbraThemeUi::underMode() == PenumbraThemeUi::UnderMode::TitleAuthor &&
-                   mappedInput.wasTapInRect(0, listTop, pageW, listH)) {
+                   mappedInput.wasTapInRect(edgeW, listTop, pageW - edgeW, listH)) {
           openLastRead();
           return;
         } else if (PenumbraThemeUi::underMode() == PenumbraThemeUi::UnderMode::BookStats &&
-                   mappedInput.wasTapInRect(0, listTop, pageW, listH)) {
+                   mappedInput.wasTapInRect(edgeW, listTop, pageW - edgeW, listH)) {
           openBookStatsForRecent(recentBooks[0], /*openLifetimePage=*/false);
           return;
         } else if (PenumbraThemeUi::underMode() == PenumbraThemeUi::UnderMode::Lifetime &&
-                   mappedInput.wasTapInRect(0, listTop, pageW, listH)) {
+                   mappedInput.wasTapInRect(edgeW, listTop, pageW - edgeW, listH)) {
           openBookStatsForRecent(recentBooks[0], /*openLifetimePage=*/true);
           return;
         }
-      } else if (mappedInput.wasTapInRect(0, metrics.homeTopPadding, renderer.getScreenWidth(),
-                                          metrics.homeCoverTileHeight)) {
-        onSelectBook(recentBooks[0].path);
+      } else {
+        const int coverEdgeW = leftEdgeFrontlightWidth(renderer.getScreenWidth());
+        if (mappedInput.wasTapInRect(coverEdgeW, metrics.homeTopPadding,
+                                     renderer.getScreenWidth() - coverEdgeW, metrics.homeCoverTileHeight)) {
+          onSelectBook(recentBooks[0].path);
+        }
       }
     }
     return;
@@ -1813,8 +1824,10 @@ void HomeActivity::loop() {
 
   int tx = 0;
   int ty = 0;
-  if (!recentBooks.empty() && mappedInput.wasScreenTouchDown(tx, ty) && tx >= 0 && tx < renderer.getScreenWidth() &&
-      ty >= metrics.homeTopPadding && ty < metrics.homeTopPadding + metrics.homeCoverTileHeight) {
+  const int coverEdgeW = leftEdgeFrontlightWidth(renderer.getScreenWidth());
+  if (!recentBooks.empty() && mappedInput.wasScreenTouchDown(tx, ty) && tx >= coverEdgeW &&
+      tx < renderer.getScreenWidth() && ty >= metrics.homeTopPadding &&
+      ty < metrics.homeTopPadding + metrics.homeCoverTileHeight) {
     if (selectorIndex != 0) {
       selectorIndex = 0;
       requestUpdate();
@@ -1822,8 +1835,9 @@ void HomeActivity::loop() {
     return;
   }
 
-  if (!recentBooks.empty() &&
-      mappedInput.wasTapInRect(0, metrics.homeTopPadding, renderer.getScreenWidth(), metrics.homeCoverTileHeight)) {
+  if (!recentBooks.empty() && mappedInput.wasTapInRect(coverEdgeW, metrics.homeTopPadding,
+                                                       renderer.getScreenWidth() - coverEdgeW,
+                                                       metrics.homeCoverTileHeight)) {
     selectorIndex = 0;
     activateSelection();
     return;
