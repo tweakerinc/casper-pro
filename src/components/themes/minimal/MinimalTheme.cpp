@@ -88,8 +88,8 @@ void drawStackedVerticalLabel(const GfxRenderer& renderer, const int fontId, con
 
 }  // namespace
 
-// Shared by Stats (Dashboard) + Bare: text-only footer labels in four equal
-// columns — no rounded button chrome (matches Bare / mockup menus).
+// Shared by Stats / Bare / Penumbra. Physical-key devices: text-only columns.
+// X4 Pro: outlined pills — 10pt labels were invisible on the clock-face home.
 void MinimalTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                    const char* btn4) const {
   // X4 Pro: soft front chrome is the only Menu/Library/Recents/Read surface.
@@ -114,6 +114,12 @@ void MinimalTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, cons
   const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
 
   if (landscape) {
+    // Pro has no physical front keys — use BaseTheme outlined pills so Home/Menu
+    // on the reader edge is actually visible. Hit-test uses the same slots.
+    if (gpio.needsOnScreenFrontChrome()) {
+      BaseTheme::drawButtonHints(renderer, btn1, btn2, btn3, btn4);
+      return;
+    }
     const int stripX = landscapeCcw ? (pageW - barH) : 0;
     renderer.fillRect(stripX, 0, barH, pageH, false);
 
@@ -138,9 +144,38 @@ void MinimalTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, cons
     renderer.fillRect(0, barY, pageW, barH, false);
   }
 
-  constexpr int kFooterFontId = UI_10_FONT_ID;
   constexpr int kSlots = 4;
   const int slotW = pageW / kSlots;
+
+  // X4 Pro: 10pt text-only labels vanished on the 480-wide Penumbra clock face.
+  // Draw X3-style outlined pills in the same four equal columns the hit-test uses.
+  if (gpio.needsOnScreenFrontChrome()) {
+    constexpr int kGap = 6;
+    constexpr int kCorner = 6;
+    constexpr int kFontId = UI_12_FONT_ID;
+    const bool roundTop = !inverted;
+    const bool roundBottom = inverted;
+    const int lineH = renderer.getLineHeight(kFontId);
+    const int textY = barY + (barH - lineH) / 2;
+    for (int i = 0; i < kSlots; ++i) {
+      if (labels[i] == nullptr || labels[i][0] == '\0') continue;
+      const int col = inverted ? (kSlots - 1 - i) : i;
+      const int pillX = col * slotW + kGap / 2;
+      const int pillW = slotW - kGap;
+      renderer.fillRoundedRect(pillX, barY, pillW, barH, kCorner, roundTop, roundTop, roundBottom, roundBottom,
+                               Color::White);
+      renderer.drawRoundedRect(pillX, barY, pillW, barH, 1, kCorner, roundTop, roundTop, roundBottom, roundBottom,
+                               true);
+      const int maxLabelW = std::max(8, pillW - 8);
+      const std::string label = renderer.truncatedText(kFontId, labels[i], maxLabelW, EpdFontFamily::BOLD);
+      const int tw = renderer.getTextWidth(kFontId, label.c_str(), EpdFontFamily::BOLD);
+      const int tx = pillX + (pillW - tw) / 2;
+      renderer.drawText(kFontId, tx, textY, label.c_str(), true, EpdFontFamily::BOLD);
+    }
+    return;
+  }
+
+  constexpr int kFooterFontId = UI_10_FONT_ID;
   const int lineH = renderer.getLineHeight(kFooterFontId);
   const int textY = barY + (barH - lineH) / 2;
 
