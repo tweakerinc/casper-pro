@@ -746,9 +746,9 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       continue;
     }
 
-    // Focus: bold only on button-nav boards. Touch UI is tap-to-open — no scroll highlight.
-    const bool touchUi = gpio.hasTouch();
-    const bool showFocus = focused && !touchUi;
+    // Focus: bold when Up/Down keys exist (X3/X4/Pro). Touch-only boards stay tap-to-open.
+    const bool buttonNavFocus = !gpio.hasTouch() || gpio.hasPhysicalUpDown();
+    const bool showFocus = focused && buttonNavFocus;
     const int blockH = titleBlockH + (subtitleDrawn.empty() ? 0 : (kBaseTitleSubtitleGap + subtitleLineH));
     int textY = itemY + std::max(0, (rowHeight - blockH) / 2);
     const int textX = rect.x + BaseMetrics::values.contentSidePadding;
@@ -1164,14 +1164,13 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
                                const std::function<std::string(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
   (void)rowIcon;  // Home menu is text-only; icons unused.
-  // Touch boards: tap to open — no bold “scroll selection” highlight.
-  const bool touchUi = gpio.hasTouch();
+  const bool buttonNavFocus = !gpio.hasTouch() || gpio.hasPhysicalUpDown();
   for (int i = 0; i < buttonCount; ++i) {
     // Layout from rect.y (caller vertically centers the full stack).
     const int tileY =
         rect.y + static_cast<int>(i) * (BaseMetrics::values.menuRowHeight + BaseMetrics::values.menuSpacing);
 
-    const bool selected = !touchUi && selectedIndex == i;
+    const bool selected = buttonNavFocus && selectedIndex == i;
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
     const auto style = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
@@ -1742,10 +1741,10 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
   const auto pageHeight = renderer.getScreenHeight();
 
   const int optionFontId = metrics.optionPopupUseSmallFont ? UI_10_FONT_ID : UI_12_FONT_ID;
-  // Button-nav: focus is bold-only. Touch: all options regular (tap-to-select).
-  // Always size dialog against BOLD so a focused row never widens past the frame.
+  // Button-nav: focus is bold-only. Always size dialog against BOLD so a focused
+  // row never widens past the frame.
   (void)metrics.optionPopupOptionFontBold;
-  const bool touchUi = gpio.hasTouch();
+  const bool buttonNavFocus = !gpio.hasTouch() || gpio.hasPhysicalUpDown();
 
   const int itemSpacing = metrics.optionPopupItemSpacing;
   const int innerPadding = metrics.optionPopupInnerPadding;
@@ -1836,7 +1835,7 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
   for (int vis = 0; vis < visibleCount; vis++) {
     const int i = firstVisible + vis;
     const int itemY = y + vis * rowStep;
-    const bool selected = !touchUi && (i == selectedIndex);
+    const bool selected = buttonNavFocus && (i == selectedIndex);
     const char* labelText = options[i].c_str();
     const auto optionStyle = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
 

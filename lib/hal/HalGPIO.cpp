@@ -236,6 +236,10 @@ bool HalGPIO::needsOnScreenFrontChrome() const {
   return BoardConfig::ACTIVE.input.back < 0 && BoardConfig::ACTIVE.input.confirm < 0;
 }
 
+bool HalGPIO::hasPhysicalUpDown() const {
+  return BoardConfig::ACTIVE.input.up >= 0 || BoardConfig::ACTIVE.input.down >= 0;
+}
+
 bool HalGPIO::wasTouchTap(float& nx, float& ny) const { return inputMgr.wasTouchTap(nx, ny); }
 
 bool HalGPIO::wasTouchDown(float& nx, float& ny) const { return inputMgr.wasTouchPressedAt(nx, ny); }

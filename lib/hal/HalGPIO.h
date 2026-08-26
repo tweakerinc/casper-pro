@@ -93,6 +93,8 @@ class HalGPIO {
   // pills on home and list screens. Capacitive Home still works as global goHome.
   // The reader page does not use this — it keeps the X3 status-bar mapping.
   bool needsOnScreenFrontChrome() const;
+  // Physical Up or Down GPIO assigned (X3/X4 front cluster, X4 Pro side keys).
+  bool hasPhysicalUpDown() const;
   void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 
   // Verify power button was held long enough after wakeup.

@@ -370,9 +370,9 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
     const int lineStep = lyraTitleLineStep(renderer, titleFont, nTitleLines);
     const int titleBlockH = lyraTitleBlockHeight(renderer, titleFont, nTitleLines);
 
-    // Focus: bold only on button-nav boards. Touch UI is tap-to-open — no scroll highlight.
-    const bool touchUi = gpio.hasTouch();
-    const bool isSelected = !touchUi && (i == selectedIndex);
+    // Focus: bold when Up/Down keys exist (X3/X4/Pro). Touch-only boards stay tap-to-open.
+    const bool buttonNavFocus = !gpio.hasTouch() || gpio.hasPhysicalUpDown();
+    const bool isSelected = buttonNavFocus && (i == selectedIndex);
     (void)highlightValue;
     (void)maxRowWidth;
 
@@ -612,14 +612,12 @@ void LyraTheme::drawEmptyRecents(const GfxRenderer& renderer, const Rect rect) c
 void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
-  // Home Menu: centered text-only list (no icons). Optional rowIcon kept for
-  // any legacy callers that still pass one.
-  // Touch boards: tap to open — no bold scroll-selection highlight.
-  const bool touchUi = gpio.hasTouch();
+  // Home Menu: centered text-only list. Bold the focused row when Up/Down keys exist.
+  const bool buttonNavFocus = !gpio.hasTouch() || gpio.hasPhysicalUpDown();
   const bool drawIcons = static_cast<bool>(rowIcon);
   for (int i = 0; i < buttonCount; ++i) {
     const int tileY = rect.y + i * (LyraMetrics::values.menuRowHeight + LyraMetrics::values.menuSpacing);
-    const bool selected = !touchUi && selectedIndex == i;
+    const bool selected = buttonNavFocus && selectedIndex == i;
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
     const auto style = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;

@@ -919,7 +919,7 @@ void drawRecentsListPanel(const GfxRenderer& renderer, const ContentBand& band, 
     if (!x4 && !band.pinBlocks && y + rowH > zoneBottom) break;
     const RecentBook& book = books[static_cast<size_t>(i)];
     // Button-nav: bold focus for Down/side scroll. Touch: uniform list (tap opens).
-    const bool focused = !gpio.hasTouch() && (i == focus);
+    const bool focused = (!gpio.hasTouch() || gpio.hasPhysicalUpDown()) && (i == focus);
     const char* title = book.title.empty() ? book.path.c_str() : book.title.c_str();
     const std::string authorDisplay =
         book.author.empty() ? std::string() : StringUtils::formatAuthorDisplayName(book.author);
@@ -979,7 +979,7 @@ void drawRecentsListPanel(const GfxRenderer& renderer, const ContentBand& band, 
       const int minAfterBooks = y - kRowGap + viewAllGap;
       if (vaY < minAfterBooks) vaY = minAfterBooks;
       if (vaY + vaH <= zoneBottom + 2) {
-        const bool viewAllFocused = !gpio.hasTouch() && (focus == n);
+        const bool viewAllFocused = (!gpio.hasTouch() || gpio.hasPhysicalUpDown()) && (focus == n);
         const char* label = tr(STR_VIEW_ALL);
         const int chipFont = UI_12_FONT_ID;
         const auto style = viewAllFocused ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
