@@ -465,51 +465,147 @@ void drawGlobalStatsCard(GfxRenderer& renderer, const int x, const int y, const 
   cell(2, rowY1, rowH1, buf, tr(STR_STATS_LONGEST_STREAK_LBL));
 }
 
-constexpr int kDateCardY = 138;
-constexpr int kDateSectionGap = 104;
-constexpr int kDateMonthW = 52;
-constexpr int kDateDayW = 46;
-constexpr int kDateYearW = 68;
-constexpr int kDateFieldGap = 14;
+constexpr int kDateHitPad = 8;
+constexpr int kDateBtnRadius = 8;
 
-void dateFieldRect(const GfxRenderer& renderer, const int field, int& x, int& y, int& w, int& h) {
-  const int pageWidth = renderer.getScreenWidth();
-  const int cardW = pageWidth - 120;
-  const int cardX = (pageWidth - cardW) / 2;
-  const int row1Y = kDateCardY + 66;
-  const int widths[3] = {kDateMonthW, kDateDayW, kDateYearW};
-  const int col = field % 3;
-  const int totalW = kDateMonthW + kDateFieldGap + kDateDayW + kDateFieldGap + kDateYearW;
-  int colX = cardX + (cardW - totalW) / 2;
-  for (int i = 0; i < col; ++i) {
-    colX += widths[i] + kDateFieldGap;
-  }
-  x = colX;
-  y = (field / 3) == 0 ? row1Y : (row1Y + kDateSectionGap);
-  w = widths[col];
-  h = renderer.getLineHeight(UI_12_FONT_ID) + 10;
+struct DateStepperCol {
+  Rect up;
+  Rect value;
+  Rect down;
+};
+
+struct DateEditLayout {
+  DateStepperCol start[3];
+  DateStepperCol finished[3];
+  Rect done;
+  Rect clearStart;
+  Rect clearFinished;
+};
+
+bool containsPadded(const Rect& r, const int x, const int y, const int pad = kDateHitPad) {
+  return r.width > 0 && r.height > 0 && x >= r.x - pad && x < r.x + r.width + pad && y >= r.y - pad &&
+         y < r.y + r.height + pad;
 }
 
-void drawDateField(const GfxRenderer& renderer, const int x, const int y, const int w, const char* text,
-                   const bool selected) {
-  const int h = renderer.getLineHeight(UI_12_FONT_ID) + 10;
-  constexpr int kFieldRadius = 8;
-  renderer.fillRoundedRect(x, y, w, h, kFieldRadius, selected ? Color::LightGray : Color::White);
-  renderer.drawRoundedRect(x, y, w, h, selected ? 2 : 1, kFieldRadius, true);
-  drawCenteredLabel(renderer, UI_12_FONT_ID, x, w, y + 5, text);
+void placeStepperRow(DateStepperCol cols[3], const int x0, const int y0, const int colW, const int colGap,
+                     const int stepH, const int valueH) {
+  for (int i = 0; i < 3; ++i) {
+    const int x = x0 + i * (colW + colGap);
+    cols[i].up = Rect{x, y0, colW, stepH};
+    cols[i].value = Rect{x, y0 + stepH, colW, valueH};
+    cols[i].down = Rect{x, y0 + stepH + valueH, colW, stepH};
+  }
+}
+
+DateEditLayout makeDateEditLayout(const GfxRenderer& renderer) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageW = renderer.getScreenWidth();
+  const int pageH = renderer.getScreenHeight();
+  const int side = metrics.contentSidePadding;
+  const int footerH = metrics.buttonHintsHeight;
+  const int doneH = 52;
+  const int doneGap = 10;
+  DateEditLayout layout{};
+  layout.done = Rect{side, pageH - footerH - doneGap - doneH, pageW - side * 2, doneH};
+
+  const int titleY = CompactHeader::contentTop(metrics);
+  const int titleH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int labelH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int labelBand = std::max(44, labelH + 12);
+  const int groupGap = 16;
+  const int groupTop = titleY + titleH + 12;
+
+  const int usableW = std::max(1, pageW - side * 2);
+  const int colGap = 10;
+  int colW = (usableW - colGap * 2) / 3;
+  if (colW < 72) colW = std::max(56, usableW / 3);
+
+  int stepH = 56;
+  int valueH = 52;
+  auto groupH = [&]() { return labelBand + stepH + valueH + stepH; };
+  const int avail = layout.done.y - groupTop - 8;
+  while (groupH() * 2 + groupGap > avail && stepH > 44) {
+    --stepH;
+  }
+  while (groupH() * 2 + groupGap > avail && valueH > 40) {
+    --valueH;
+  }
+
+  const int clearW = std::max(56, renderer.getTextWidth(UI_10_FONT_ID, tr(STR_CLEAR_BUTTON)) + 20);
+
+  auto placeGroup = [&](DateStepperCol cols[3], Rect& clearRect, const int y) {
+    placeStepperRow(cols, side, y + labelBand, colW, colGap, stepH, valueH);
+    clearRect = Rect{pageW - side - clearW, y, clearW, labelBand};
+  };
+
+  placeGroup(layout.start, layout.clearStart, groupTop);
+  placeGroup(layout.finished, layout.clearFinished, groupTop + groupH() + groupGap);
+  return layout;
+}
+
+void drawTouchBtn(const GfxRenderer& renderer, const Rect& r, const char* text, const int fontId, const bool selected) {
+  if (r.width <= 0 || r.height <= 0 || text == nullptr) return;
+  renderer.fillRoundedRect(r.x, r.y, r.width, r.height, kDateBtnRadius, selected ? Color::LightGray : Color::White);
+  renderer.drawRoundedRect(r.x, r.y, r.width, r.height, selected ? 2 : 1, kDateBtnRadius, true);
+  const int tw = renderer.getTextWidth(fontId, text, EpdFontFamily::BOLD);
+  const int th = renderer.getLineHeight(fontId);
+  renderer.drawText(fontId, r.x + (r.width - tw) / 2, r.y + (r.height - th) / 2, text, true, EpdFontFamily::BOLD);
+}
+
+void formatDateColumnTokens(const ReadingStatsDate& date, char monthBuf[8], char dayBuf[8], char yearBuf[8]) {
+  formatReadingStatsMonthToken(date, monthBuf, 8);
+  if (date.isValid()) {
+    snprintf(dayBuf, 8, "%02u", static_cast<unsigned>(date.day));
+    snprintf(yearBuf, 8, "%u", static_cast<unsigned>(date.year));
+  } else {
+    snprintf(dayBuf, 8, "-");
+    snprintf(yearBuf, 8, "-");
+  }
+}
+
+void drawDateStepperGroup(const GfxRenderer& renderer, const DateStepperCol cols[3], const Rect& clearRect,
+                           const char* title, const ReadingStatsDate& date, const int selectedField,
+                           const int fieldBase) {
+  const int labelH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int titleMaxW = std::max(1, clearRect.x - cols[0].up.x - 8);
+  const std::string titleText = renderer.truncatedText(UI_10_FONT_ID, title, titleMaxW, EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, cols[0].up.x, clearRect.y + (clearRect.height - labelH) / 2, titleText.c_str(), true,
+                    EpdFontFamily::BOLD);
+  drawTouchBtn(renderer, clearRect, tr(STR_CLEAR_BUTTON), UI_10_FONT_ID, false);
+
+  char monthBuf[8];
+  char dayBuf[8];
+  char yearBuf[8];
+  formatDateColumnTokens(date, monthBuf, dayBuf, yearBuf);
+  const char* tokens[3] = {monthBuf, dayBuf, yearBuf};
+  for (int i = 0; i < 3; ++i) {
+    drawTouchBtn(renderer, cols[i].up, "+", UI_12_FONT_ID, false);
+    drawTouchBtn(renderer, cols[i].value, tokens[i], UI_12_FONT_ID, selectedField == fieldBase + i);
+    drawTouchBtn(renderer, cols[i].down, "-", UI_12_FONT_ID, false);
+  }
 }
 }  // namespace
 
-int editBookDateFieldAt(const GfxRenderer& renderer, const int tx, const int ty) {
-  constexpr int kPad = 10;
-  for (int i = 0; i < 6; ++i) {
-    int x = 0, y = 0, w = 0, h = 0;
-    dateFieldRect(renderer, i, x, y, w, h);
-    if (tx >= x - kPad && tx < x + w + kPad && ty >= y - kPad && ty < y + h + kPad) {
-      return i;
+DateEditHit editBookDateHitAt(const GfxRenderer& renderer, const int tx, const int ty) {
+  const DateEditLayout layout = makeDateEditLayout(renderer);
+  if (containsPadded(layout.done, tx, ty)) return {DateEditHitKind::Done, 0};
+  if (containsPadded(layout.clearStart, tx, ty)) return {DateEditHitKind::ClearStart, 0};
+  if (containsPadded(layout.clearFinished, tx, ty)) return {DateEditHitKind::ClearFinished, 0};
+  for (int i = 0; i < 3; ++i) {
+    if (containsPadded(layout.start[i].up, tx, ty) || containsPadded(layout.start[i].value, tx, ty)) {
+      return {DateEditHitKind::Inc, static_cast<uint8_t>(i)};
+    }
+    if (containsPadded(layout.start[i].down, tx, ty)) {
+      return {DateEditHitKind::Dec, static_cast<uint8_t>(i)};
+    }
+    if (containsPadded(layout.finished[i].up, tx, ty) || containsPadded(layout.finished[i].value, tx, ty)) {
+      return {DateEditHitKind::Inc, static_cast<uint8_t>(3 + i)};
+    }
+    if (containsPadded(layout.finished[i].down, tx, ty)) {
+      return {DateEditHitKind::Dec, static_cast<uint8_t>(3 + i)};
     }
   }
-  return -1;
+  return {};
 }
 
 void renderPerBookStatsPage(GfxRenderer& renderer, const MappedInputManager* mappedInput, const std::string& bookTitle,
@@ -686,62 +782,23 @@ void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* ma
   renderer.clearScreen();
   CompactHeader::drawTitle(renderer, tr(STR_READING_STATS));
 
+  const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
-  const int cardW = pageWidth - 120;
-  const int cardH = 250;
-  const int cardX = (pageWidth - cardW) / 2;
-  const int cardY = kDateCardY;
-
+  const int titleY = CompactHeader::contentTop(metrics);
   const std::string visibleTitle =
-      renderer.truncatedText(UI_12_FONT_ID, bookTitle.c_str(), pageWidth - 80, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(UI_12_FONT_ID, 96, visibleTitle.c_str(), true, EpdFontFamily::BOLD);
-  // Outer panel only (no title divider) — date fields sit inside.
-  renderer.drawRoundedRect(cardX, cardY, cardW, cardH, kStatsCardStroke, kStatsCardCornerRadius, true);
+      renderer.truncatedText(UI_12_FONT_ID, bookTitle.c_str(), pageWidth - metrics.contentSidePadding * 2,
+                            EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_12_FONT_ID, titleY, visibleTitle.c_str(), true, EpdFontFamily::BOLD);
 
-  char monthBuf[8];
-  char dayBuf[8];
-  char yearBuf[8];
-
-  drawCenteredLabel(renderer, UI_10_FONT_ID, cardX, cardW, cardY + 24, tr(STR_STATS_START_DATE), true);
-  formatReadingStatsMonthToken(stats.startDate, monthBuf, sizeof(monthBuf));
-  snprintf(dayBuf, sizeof(dayBuf), "%s", stats.startDate.isValid() ? "" : "-");
-  if (stats.startDate.isValid()) {
-    snprintf(dayBuf, sizeof(dayBuf), "%02u", static_cast<unsigned>(stats.startDate.day));
-    snprintf(yearBuf, sizeof(yearBuf), "%u", static_cast<unsigned>(stats.startDate.year));
-  } else {
-    snprintf(dayBuf, sizeof(dayBuf), "-");
-    snprintf(yearBuf, sizeof(yearBuf), "-");
-  }
-  int fx = 0, fy = 0, fw = 0, fh = 0;
-  (void)fh;
-  dateFieldRect(renderer, 0, fx, fy, fw, fh);
-  drawDateField(renderer, fx, fy, fw, monthBuf, selectedField == 0);
-  dateFieldRect(renderer, 1, fx, fy, fw, fh);
-  drawDateField(renderer, fx, fy, fw, dayBuf, selectedField == 1);
-  dateFieldRect(renderer, 2, fx, fy, fw, fh);
-  drawDateField(renderer, fx, fy, fw, yearBuf, selectedField == 2);
-
-  drawCenteredLabel(renderer, UI_10_FONT_ID, cardX, cardW, cardY + 24 + kDateSectionGap, tr(STR_STATS_FINISHED_DATE),
-                    true);
-  const bool showFinishedFields = stats.isCompleted && stats.finishedDate.isValid();
-  formatReadingStatsMonthToken(showFinishedFields ? stats.finishedDate : ReadingStatsDate{}, monthBuf,
-                               sizeof(monthBuf));
-  if (showFinishedFields) {
-    snprintf(dayBuf, sizeof(dayBuf), "%02u", static_cast<unsigned>(stats.finishedDate.day));
-    snprintf(yearBuf, sizeof(yearBuf), "%u", static_cast<unsigned>(stats.finishedDate.year));
-  } else {
-    snprintf(dayBuf, sizeof(dayBuf), "-");
-    snprintf(yearBuf, sizeof(yearBuf), "-");
-  }
-  dateFieldRect(renderer, 3, fx, fy, fw, fh);
-  drawDateField(renderer, fx, fy, fw, monthBuf, selectedField == 3);
-  dateFieldRect(renderer, 4, fx, fy, fw, fh);
-  drawDateField(renderer, fx, fy, fw, dayBuf, selectedField == 4);
-  dateFieldRect(renderer, 5, fx, fy, fw, fh);
-  drawDateField(renderer, fx, fy, fw, yearBuf, selectedField == 5);
+  const DateEditLayout layout = makeDateEditLayout(renderer);
+  drawDateStepperGroup(renderer, layout.start, layout.clearStart, tr(STR_STATS_START_DATE), stats.startDate,
+                       selectedField, 0);
+  drawDateStepperGroup(renderer, layout.finished, layout.clearFinished, tr(STR_STATS_FINISHED_DATE), stats.finishedDate,
+                       selectedField, 3);
+  drawTouchBtn(renderer, layout.done, tr(STR_DONE), UI_12_FONT_ID, false);
 
   if (showButtonHints && mappedInput) {
-    const auto labels = mappedInput->mapLabels(tr(STR_BACK), tr(STR_NEXT_FIELD), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    const auto labels = mappedInput->mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 }

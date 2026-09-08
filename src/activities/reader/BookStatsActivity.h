@@ -29,13 +29,12 @@ class BookStatsActivity final : public Activity {
   bool usesNoRtcSingleScreenLayout() const { return !halClock.isAvailable(); }
   void refreshAllDevicesStats();
   void saveStats();
-  void cycleEditField();
   void adjustSelectedDateField(int delta);
   void applyCompletedState(bool completed);
   ReadingStatsDate defaultDateForField(bool finishedField) const;
   void clearEditedDate(bool finishedField);
-  bool shouldClearDateOnAdjust(const ReadingStatsDate& date, bool finishedField, int fieldIndex, int delta) const;
   void normalizeEditedDates(const bool editedFinishedField);
+  void leaveEditDates();
   void exitStatsActivity(bool viaBack);
 
  public:

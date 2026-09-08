@@ -6,6 +6,7 @@
 
 #include "BookStatsView.h"
 #include "MappedInputManager.h"
+#include "components/UITheme.h"
 #include "util/UiGhostPolicy.h"
 
 BookStatsActivity::BookStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
@@ -56,8 +57,6 @@ void BookStatsActivity::saveStats() {
   refreshAllDevicesStats();
   didChangeStats = false;
 }
-
-void BookStatsActivity::cycleEditField() { selectedEditField = (selectedEditField + 1) % 6; }
 
 ReadingStatsDate BookStatsActivity::defaultDateForField(const bool finishedField) const {
   if (finishedField && stats.finishedDate.isValid()) {
@@ -129,35 +128,16 @@ void BookStatsActivity::clearEditedDate(const bool finishedField) {
   requestUpdate();
 }
 
-bool BookStatsActivity::shouldClearDateOnAdjust(const ReadingStatsDate& date, const bool finishedField,
-                                                const int fieldIndex, const int delta) const {
-  if (!date.isValid()) {
-    return false;
-  }
-
-  switch (fieldIndex) {
-    case 0:
-      return (date.month == 1 && delta < 0) || (date.month == 12 && delta > 0);
-    case 1: {
-      const uint8_t monthDays = daysInMonth(date.year, date.month);
-      return (date.day == 1 && delta < 0) || (date.day == monthDays && delta > 0);
-    }
-    case 2:
-      return (date.year == 2000 && delta < 0) || (date.year == 2099 && delta > 0);
-    default:
-      return false;
-  }
+void BookStatsActivity::leaveEditDates() {
+  saveStats();
+  page = Page::PerBook;
+  requestUpdate();
 }
 
 void BookStatsActivity::adjustSelectedDateField(const int delta) {
   const bool finishedField = selectedEditField >= 3;
   ReadingStatsDate& date = finishedField ? stats.finishedDate : stats.startDate;
   const int fieldIndex = selectedEditField % 3;
-
-  if (shouldClearDateOnAdjust(date, finishedField, fieldIndex, delta)) {
-    clearEditedDate(finishedField);
-    return;
-  }
 
   if (!date.isValid()) {
     date = defaultDateForField(finishedField);
@@ -218,6 +198,9 @@ void BookStatsActivity::adjustSelectedDateField(const int delta) {
 
 void BookStatsActivity::onEnter() {
   Activity::onEnter();
+  // Stats pages are portrait layouts. From a landscape reader the chrome sat
+  // on the side while the date fields stayed tiny — force a tall touch UI.
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   requestUpdate();
 }
 
@@ -266,20 +249,48 @@ void BookStatsActivity::loop() {
     return;
   }
 
-  // Edit dates: ClockOffset order. Logical Back/Confirm/Up/Down pick up Pro
-  // pills in any orientation (softChromeReleasedSlot). A bottom-only
-  // footerSlotAt misses landscape chrome; reading Up/Down before this page
-  // would treat those pills as Per-book Edit/More shortcuts.
+  // Edit dates: hit-test the on-screen +/− steppers and Done first. The painted
+  // footer Back/Next/Up/Down strip is not reliable on Pro (equal-column
+  // captions vs 80px pills, landscape side chrome).
   if (page == Page::EditDates) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      saveStats();
-      page = Page::PerBook;
-      requestUpdate();
-      return;
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      const DateEditHit hit = editBookDateHitAt(renderer, tx, ty);
+      switch (hit.kind) {
+        case DateEditHitKind::Inc:
+          selectedEditField = hit.field;
+          adjustSelectedDateField(1);
+          return;
+        case DateEditHitKind::Dec:
+          selectedEditField = hit.field;
+          adjustSelectedDateField(-1);
+          return;
+        case DateEditHitKind::Done:
+          leaveEditDates();
+          return;
+        case DateEditHitKind::ClearStart:
+          clearEditedDate(false);
+          return;
+        case DateEditHitKind::ClearFinished:
+          clearEditedDate(true);
+          return;
+        case DateEditHitKind::None:
+          break;
+      }
+      const int pageW = renderer.getScreenWidth();
+      const int pageH = renderer.getScreenHeight();
+      const int stripH = UITheme::getInstance().getMetrics().buttonHintsHeight;
+      if (ty >= pageH - stripH) {
+        const int slot = std::clamp(tx * 4 / std::max(1, pageW), 0, 3);
+        if (slot == 0) {
+          leaveEditDates();
+        }
+        return;
+      }
     }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      cycleEditField();
-      requestUpdate();
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      leaveEditDates();
       return;
     }
     if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
@@ -291,18 +302,6 @@ void BookStatsActivity::loop() {
         mappedInput.wasPressed(MappedInputManager::Button::Right)) {
       adjustSelectedDateField(1);
       return;
-    }
-    int tx = 0, ty = 0;
-    if (mappedInput.wasScreenTapped(tx, ty)) {
-      const int field = editBookDateFieldAt(renderer, tx, ty);
-      if (field >= 0) {
-        if (field == selectedEditField) {
-          adjustSelectedDateField(1);
-        } else {
-          selectedEditField = field;
-          requestUpdate();
-        }
-      }
     }
     return;
   }

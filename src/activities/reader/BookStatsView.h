@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 #include "BookReadingStats.h"
@@ -25,5 +26,11 @@ void renderNoRtcCombinedStatsPage(GfxRenderer& renderer, const MappedInputManage
 void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* mappedInput, const std::string& bookTitle,
                              const BookReadingStats& stats, int selectedField, bool showButtonHints);
 
-// 0–5: start month/day/year then finished month/day/year. -1 if the tap misses.
-int editBookDateFieldAt(const GfxRenderer& renderer, int tx, int ty);
+enum class DateEditHitKind : uint8_t { None, Inc, Dec, Done, ClearStart, ClearFinished };
+
+struct DateEditHit {
+  DateEditHitKind kind = DateEditHitKind::None;
+  uint8_t field = 0;
+};
+
+DateEditHit editBookDateHitAt(const GfxRenderer& renderer, int tx, int ty);
