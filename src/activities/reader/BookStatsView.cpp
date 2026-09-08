@@ -644,7 +644,7 @@ void renderPerBookStatsPage(GfxRenderer& renderer, const MappedInputManager* map
                             const BookReadingStats& stats, const float progressPercent, const bool hasEstimatedTimeLeft,
                             const uint32_t estimatedTimeLeftSeconds, const bool showButtonHints,
                             const bool showEditButton, const bool showMoreButton) {
-  gPerBookEditHit = {};
+  gPerBookEditHit = Rect(0, 0, 0, 0);
   renderer.clearScreen();
   const bool showRtcStats = shouldShowRtcBasedStats();
   const auto& metrics = UITheme::getInstance().getMetrics();
