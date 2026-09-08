@@ -24,9 +24,11 @@ class BookStatsActivity final : public Activity {
   Page page = Page::PerBook;
   int selectedEditField = 0;
   bool didChangeStats = false;
+  bool touchStrokeHandled = false;
 
   bool hasEditableBook() const { return !bookCachePath.empty() && halClock.isAvailable(); }
   bool usesNoRtcSingleScreenLayout() const { return !halClock.isAvailable(); }
+  bool takeTouch(int& tx, int& ty);
   void refreshAllDevicesStats();
   void saveStats();
   void adjustSelectedDateField(int delta);

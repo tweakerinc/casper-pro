@@ -459,14 +459,8 @@ bool MappedInputManager::wasTopRightToLeftGesture() const {
   return hit;
 }
 
-namespace {
-// Soft front chrome (X4 Pro): map strip taps to the same slots BaseTheme paints
-// so Menu/Library/Recents/Read work without physical front keys.
-int softChromeReleasedSlot(const MappedInputManager& input, HalGPIO& gpio, const GfxRenderer& renderer) {
-  if (!gpio.needsOnScreenFrontChrome() || !input.isSoftFrontChromeEnabled()) return -1;
-  int tx = 0;
-  int ty = 0;
-  if (!input.wasScreenTapped(tx, ty)) return -1;
+int MappedInputManager::frontChromeSlotAt(const int x, const int y) const {
+  if (!gpio.needsOnScreenFrontChrome()) return -1;
 
   constexpr int kButtonW = 80;
   constexpr int kX4Positions[] = {58, 146, 254, 342};
@@ -483,7 +477,7 @@ int softChromeReleasedSlot(const MappedInputManager& input, HalGPIO& gpio, const
 
   if (landscapeCw || landscapeCcw) {
     const int stripX = landscapeCcw ? (pageW - stripDepth) : 0;
-    if (tx < stripX || tx >= stripX + stripDepth) return -1;
+    if (x < stripX || x >= stripX + stripDepth) return -1;
     const int portraitSpan = gpio.deviceIsX3() ? 528 : 480;
     constexpr int kClusterNudgeUp = 8;
     for (int i = 0; i < 4; ++i) {
@@ -492,19 +486,29 @@ int softChromeReleasedSlot(const MappedInputManager& input, HalGPIO& gpio, const
       int yCenter = landscapeCcw ? (pageH - 1 - scaled) : scaled;
       yCenter -= kClusterNudgeUp;
       const int pillY = yCenter - kButtonW / 2;
-      if (ty >= pillY && ty < pillY + kButtonW) return static_cast<int>(kSlotToBtn[i]);
+      if (y >= pillY && y < pillY + kButtonW) return static_cast<int>(kSlotToBtn[i]);
     }
     return -1;
   }
 
-  // Portrait home is 480×800 on X4/X4 Pro (X3 is 528×792). Bare/Penumbra/Minimal
-  // draw four equal-width text columns across that width — hit-test the same
-  // quarters so a finger tap matches the label, not the 80px X4 key cutouts.
+  // Portrait: Bare/Penumbra/Minimal draw four equal-width text columns.
   const int barY = inverted ? 0 : (pageH - stripDepth);
-  if (ty < barY || ty >= barY + stripDepth) return -1;
-  const int visualCol = std::clamp(tx * 4 / std::max(1, pageW), 0, 3);
+  if (y < barY || y >= barY + stripDepth) return -1;
+  const int visualCol = std::clamp(x * 4 / std::max(1, pageW), 0, 3);
   const int slot = inverted ? (3 - visualCol) : visualCol;
   return static_cast<int>(kSlotToBtn[slot]);
+}
+
+namespace {
+// Soft front chrome (X4 Pro): map strip taps to the same slots BaseTheme paints
+// so Menu/Library/Recents/Read work without physical front keys.
+int softChromeReleasedSlot(const MappedInputManager& input, HalGPIO& gpio, const GfxRenderer& renderer) {
+  (void)renderer;
+  if (!gpio.needsOnScreenFrontChrome() || !input.isSoftFrontChromeEnabled()) return -1;
+  int tx = 0;
+  int ty = 0;
+  if (!input.wasScreenTapped(tx, ty)) return -1;
+  return input.frontChromeSlotAt(tx, ty);
 }
 
 bool softChromeIsLogical(const MappedInputManager& input, HalGPIO& gpio, const GfxRenderer& renderer,

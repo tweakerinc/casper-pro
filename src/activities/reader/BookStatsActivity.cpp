@@ -1,12 +1,10 @@
 #include "BookStatsActivity.h"
 
+#include <HalGPIO.h>
 #include <I18n.h>
-
-#include <algorithm>
 
 #include "BookStatsView.h"
 #include "MappedInputManager.h"
-#include "components/UITheme.h"
 #include "util/UiGhostPolicy.h"
 
 BookStatsActivity::BookStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
@@ -198,9 +196,6 @@ void BookStatsActivity::adjustSelectedDateField(const int delta) {
 
 void BookStatsActivity::onEnter() {
   Activity::onEnter();
-  // Stats pages are portrait layouts. From a landscape reader the chrome sat
-  // on the side while the date fields stayed tiny — force a tall touch UI.
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   requestUpdate();
 }
 
@@ -218,43 +213,52 @@ void BookStatsActivity::exitStatsActivity(const bool /*viaBack*/) {
   finish();
 }
 
+bool BookStatsActivity::takeTouch(int& tx, int& ty) {
+  // One action per contact: fire on 90ms down (ClockOffset/menu pattern) or on a
+  // clean tap-up. Reader paging uses tap-up only; a finger roll past slop made
+  // the date editor look dead. Do not also count the matching release.
+  if (mappedInput.wasScreenTouchDown(tx, ty) || mappedInput.wasScreenTapped(tx, ty)) {
+    if (touchStrokeHandled) return false;
+    touchStrokeHandled = true;
+    return true;
+  }
+  int hx = 0;
+  int hy = 0;
+  if (!mappedInput.isScreenTouchHeld(hx, hy)) {
+    touchStrokeHandled = false;
+  }
+  return false;
+}
+
 void BookStatsActivity::loop() {
-  // Soft footer slots (L→R). Per-book: Back | empty | Edit | More.
-  // Equal quarters match Bare/Penumbra painted captions (not the 80px key cutouts).
-  auto footerSlotAt = [this](const int tx, const int ty) -> int {
-    const int pageW = renderer.getScreenWidth();
-    const int pageH = renderer.getScreenHeight();
-    const int stripH = std::max(40, pageH / 12);
-    if (ty < pageH - stripH) return -1;
-    return std::clamp(tx * 4 / std::max(1, pageW), 0, 3);
-  };
+  // Soft chrome would also synthesize Back/Left/Right from the same tap.
+  // Hit-test painted widgets first, then the chrome strip geometry ourselves.
+  struct DisableSoftChrome {
+    MappedInputManager& in;
+    explicit DisableSoftChrome(MappedInputManager& in) : in(in) { in.setSoftFrontChromeEnabled(false); }
+    ~DisableSoftChrome() { in.setSoftFrontChromeEnabled(true); }
+  } hold(mappedInput);
+
+  int tx = 0;
+  int ty = 0;
+  const bool touch = takeTouch(tx, ty);
+  const int chromeSlot = touch ? mappedInput.frontChromeSlotAt(tx, ty) : -1;
 
   if (usesNoRtcSingleScreenLayout()) {
-    int tx = 0, ty = 0;
-    if (mappedInput.wasScreenTapped(tx, ty)) {
-      const int slot = footerSlotAt(tx, ty);
-      if (slot == 0 || slot == 1) {
-        exitStatsActivity(true);
-        return;
-      }
-    }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    if (chromeSlot == HalGPIO::BTN_BACK || chromeSlot == HalGPIO::BTN_CONFIRM) {
       exitStatsActivity(true);
       return;
     }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      exitStatsActivity(false);
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      exitStatsActivity(true);
       return;
     }
     return;
   }
 
-  // Edit dates: hit-test the on-screen +/− steppers and Done first. The painted
-  // footer Back/Next/Up/Down strip is not reliable on Pro (equal-column
-  // captions vs 80px pills, landscape side chrome).
   if (page == Page::EditDates) {
-    int tx = 0, ty = 0;
-    if (mappedInput.wasScreenTapped(tx, ty)) {
+    if (touch) {
       const DateEditHit hit = editBookDateHitAt(renderer, tx, ty);
       switch (hit.kind) {
         case DateEditHitKind::Inc:
@@ -277,14 +281,8 @@ void BookStatsActivity::loop() {
         case DateEditHitKind::None:
           break;
       }
-      const int pageW = renderer.getScreenWidth();
-      const int pageH = renderer.getScreenHeight();
-      const int stripH = UITheme::getInstance().getMetrics().buttonHintsHeight;
-      if (ty >= pageH - stripH) {
-        const int slot = std::clamp(tx * 4 / std::max(1, pageW), 0, 3);
-        if (slot == 0) {
-          leaveEditDates();
-        }
+      if (chromeSlot == HalGPIO::BTN_BACK) {
+        leaveEditDates();
         return;
       }
     }
@@ -306,50 +304,49 @@ void BookStatsActivity::loop() {
     return;
   }
 
+  if (touch) {
+    if (page == Page::PerBook && hasEditableBook() && chromeSlot < 0 && perBookEditDatesHitAt(tx, ty)) {
+      page = Page::EditDates;
+      requestUpdate();
+      return;
+    }
+    if (chromeSlot == HalGPIO::BTN_BACK) {
+      if (page == Page::PerBook) {
+        exitStatsActivity(true);
+      } else if (page == Page::ThisDevice) {
+        page = Page::PerBook;
+        requestUpdate();
+      } else if (page == Page::AllDevices) {
+        page = Page::ThisDevice;
+        requestUpdate();
+      }
+      return;
+    }
+    if (page == Page::PerBook && chromeSlot == HalGPIO::BTN_LEFT && hasEditableBook()) {
+      page = Page::EditDates;
+      requestUpdate();
+      return;
+    }
+    if (page == Page::PerBook && chromeSlot == HalGPIO::BTN_RIGHT) {
+      page = Page::ThisDevice;
+      requestUpdate();
+      return;
+    }
+    if (page == Page::ThisDevice && chromeSlot == HalGPIO::BTN_RIGHT && showAllDevicesStats) {
+      page = Page::AllDevices;
+      requestUpdate();
+      return;
+    }
+    if (page == Page::ThisDevice && chromeSlot == HalGPIO::BTN_CONFIRM) {
+      exitStatsActivity(false);
+      return;
+    }
+  }
+
   const bool editShortcutPressed = mappedInput.wasPressed(MappedInputManager::Button::Up) ||
                                    mappedInput.wasPressed(MappedInputManager::Button::Left);
   const bool moreShortcutPressed = mappedInput.wasPressed(MappedInputManager::Button::Down) ||
                                    mappedInput.wasPressed(MappedInputManager::Button::Right);
-
-  // Touch: Edit (slot 2) / More (slot 3) on the painted hint strip.
-  int tx = 0, ty = 0;
-  if (mappedInput.wasScreenTapped(tx, ty)) {
-    const int slot = footerSlotAt(tx, ty);
-    if (slot >= 0) {
-      if (slot == 0) {
-        if (page == Page::PerBook) {
-          exitStatsActivity(true);
-        } else if (page == Page::ThisDevice) {
-          page = Page::PerBook;
-          requestUpdate();
-        } else if (page == Page::AllDevices) {
-          page = Page::ThisDevice;
-          requestUpdate();
-        }
-        return;
-      }
-      if (page == Page::PerBook && slot == 2 && hasEditableBook()) {
-        page = Page::EditDates;
-        requestUpdate();
-        return;
-      }
-      if (page == Page::PerBook && slot == 3) {
-        page = Page::ThisDevice;
-        requestUpdate();
-        return;
-      }
-      if (page == Page::ThisDevice && slot == 3 && showAllDevicesStats) {
-        page = Page::AllDevices;
-        requestUpdate();
-        return;
-      }
-      if (page == Page::ThisDevice && slot == 1) {
-        exitStatsActivity(false);  // Home label on lifetime page
-        return;
-      }
-      return;
-    }
-  }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (page == Page::PerBook) {

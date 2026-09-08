@@ -34,3 +34,4 @@ struct DateEditHit {
 };
 
 DateEditHit editBookDateHitAt(const GfxRenderer& renderer, int tx, int ty);
+bool perBookEditDatesHitAt(int tx, int ty);

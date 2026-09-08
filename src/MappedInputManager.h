@@ -90,6 +90,9 @@ class MappedInputManager {
   // Returns the raw front button index that was released this frame (or -1 if none).
   // Bypasses remapping so home hint slots stay fixed to physical button positions.
   int getReleasedFrontButton() const;
+  // Visual front-chrome slot (0–3) under a logical point, or -1. Matches the
+  // painted strip: portrait equal-width columns, landscape 80px side pills.
+  int frontChromeSlotAt(int x, int y) const;
   // True while a raw front button is held (hardware index, not logical remap).
   bool isFrontButtonPressed(uint8_t buttonIndex) const;
 

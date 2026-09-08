@@ -465,7 +465,7 @@ void drawGlobalStatsCard(GfxRenderer& renderer, const int x, const int y, const 
   cell(2, rowY1, rowH1, buf, tr(STR_STATS_LONGEST_STREAK_LBL));
 }
 
-constexpr int kDateHitPad = 8;
+constexpr int kDateHitPad = 12;
 constexpr int kDateBtnRadius = 8;
 
 struct DateStepperCol {
@@ -481,6 +481,8 @@ struct DateEditLayout {
   Rect clearStart;
   Rect clearFinished;
 };
+
+Rect gPerBookEditHit{};
 
 bool containsPadded(const Rect& r, const int x, const int y, const int pad = kDateHitPad) {
   return r.width > 0 && r.height > 0 && x >= r.x - pad && x < r.x + r.width + pad && y >= r.y - pad &&
@@ -499,47 +501,64 @@ void placeStepperRow(DateStepperCol cols[3], const int x0, const int y0, const i
 
 DateEditLayout makeDateEditLayout(const GfxRenderer& renderer) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageW = renderer.getScreenWidth();
-  const int pageH = renderer.getScreenHeight();
-  const int side = metrics.contentSidePadding;
-  const int footerH = metrics.buttonHintsHeight;
-  const int doneH = 52;
-  const int doneGap = 10;
+  const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, /*hasFrontButtonHints=*/true, false);
+  const int pad = metrics.contentSidePadding;
+  const int x0 = safe.x + pad;
+  const int usableW = std::max(1, safe.width - pad * 2);
+  const int bottom = safe.y + safe.height;
+  const int doneH = 48;
+  const int doneGap = 8;
   DateEditLayout layout{};
-  layout.done = Rect{side, pageH - footerH - doneGap - doneH, pageW - side * 2, doneH};
+  layout.done = Rect{x0, bottom - doneH, usableW, doneH};
 
   const int titleY = CompactHeader::contentTop(metrics);
   const int titleH = renderer.getLineHeight(UI_12_FONT_ID);
   const int labelH = renderer.getLineHeight(UI_10_FONT_ID);
-  const int labelBand = std::max(44, labelH + 12);
+  const int labelBand = std::max(36, labelH + 8);
   const int groupGap = 16;
-  const int groupTop = titleY + titleH + 12;
+  const int groupTop = titleY + titleH + 8;
+  const int avail = std::max(1, layout.done.y - groupTop - doneGap);
+  const int colGap = 8;
+  const bool sideBySide = safe.width >= 640;
 
-  const int usableW = std::max(1, pageW - side * 2);
-  const int colGap = 10;
-  int colW = (usableW - colGap * 2) / 3;
-  if (colW < 72) colW = std::max(56, usableW / 3);
+  int stepH = sideBySide ? 48 : 56;
+  int valueH = sideBySide ? 44 : 52;
+  auto groupBodyH = [&]() { return labelBand + stepH + valueH + stepH; };
 
-  int stepH = 56;
-  int valueH = 52;
-  auto groupH = [&]() { return labelBand + stepH + valueH + stepH; };
-  const int avail = layout.done.y - groupTop - 8;
-  while (groupH() * 2 + groupGap > avail && stepH > 44) {
-    --stepH;
+  int groupW = usableW;
+  if (sideBySide) {
+    groupW = (usableW - groupGap) / 2;
+    while (groupBodyH() > avail && stepH > 36) {
+      --stepH;
+    }
+    while (groupBodyH() > avail && valueH > 32) {
+      --valueH;
+    }
+  } else {
+    while (groupBodyH() * 2 + groupGap > avail && stepH > 40) {
+      --stepH;
+    }
+    while (groupBodyH() * 2 + groupGap > avail && valueH > 36) {
+      --valueH;
+    }
   }
-  while (groupH() * 2 + groupGap > avail && valueH > 40) {
-    --valueH;
-  }
 
-  const int clearW = std::max(56, renderer.getTextWidth(UI_10_FONT_ID, tr(STR_CLEAR_BUTTON)) + 20);
+  int colW = (groupW - colGap * 2) / 3;
+  if (colW < 56) colW = std::max(48, groupW / 3);
+  const int clearW = std::min(groupW / 3, std::max(56, renderer.getTextWidth(UI_10_FONT_ID, tr(STR_CLEAR_BUTTON)) + 20));
 
-  auto placeGroup = [&](DateStepperCol cols[3], Rect& clearRect, const int y) {
-    placeStepperRow(cols, side, y + labelBand, colW, colGap, stepH, valueH);
-    clearRect = Rect{pageW - side - clearW, y, clearW, labelBand};
+  auto placeGroup = [&](DateStepperCol cols[3], Rect& clearRect, const int x, const int y) {
+    placeStepperRow(cols, x, y + labelBand, colW, colGap, stepH, valueH);
+    clearRect = Rect{x + groupW - clearW, y, clearW, labelBand};
   };
 
-  placeGroup(layout.start, layout.clearStart, groupTop);
-  placeGroup(layout.finished, layout.clearFinished, groupTop + groupH() + groupGap);
+  if (sideBySide) {
+    placeGroup(layout.start, layout.clearStart, x0, groupTop);
+    placeGroup(layout.finished, layout.clearFinished, x0 + groupW + groupGap, groupTop);
+  } else {
+    placeGroup(layout.start, layout.clearStart, x0, groupTop);
+    placeGroup(layout.finished, layout.clearFinished, x0, groupTop + groupBodyH() + groupGap);
+  }
   return layout;
 }
 
@@ -608,10 +627,24 @@ DateEditHit editBookDateHitAt(const GfxRenderer& renderer, const int tx, const i
   return {};
 }
 
+bool perBookEditDatesHitAt(const int tx, const int ty) { return containsPadded(gPerBookEditHit, tx, ty); }
+
+static void drawStatsFrontChrome(GfxRenderer& renderer, const MappedInputManager* mappedInput, const char* back,
+                                  const char* confirm, const char* left, const char* right) {
+  if (mappedInput == nullptr) return;
+  if (mappedInput->needsOnScreenFrontChrome()) {
+    GUI.drawButtonHints(renderer, back, confirm, left, right);
+    return;
+  }
+  const auto labels = mappedInput->mapLabels(back, confirm, left, right);
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
 void renderPerBookStatsPage(GfxRenderer& renderer, const MappedInputManager* mappedInput, const std::string& bookTitle,
                             const BookReadingStats& stats, const float progressPercent, const bool hasEstimatedTimeLeft,
                             const uint32_t estimatedTimeLeftSeconds, const bool showButtonHints,
                             const bool showEditButton, const bool showMoreButton) {
+  gPerBookEditHit = {};
   renderer.clearScreen();
   const bool showRtcStats = shouldShowRtcBasedStats();
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -641,6 +674,9 @@ void renderPerBookStatsPage(GfxRenderer& renderer, const MappedInputManager* map
 
     drawPerBookStatsCard(renderer, cardX, y, cardW, topCardH, bookTitle, stats, progressPercent, hasEstimatedTimeLeft,
                          estimatedTimeLeftSeconds, layout);
+    if (showEditButton) {
+      gPerBookEditHit = Rect{cardX, y, cardW, topCardH};
+    }
     y += topCardH + layout.cardGap;
 
     drawSectionCard(renderer, cardX, y, cardW, timeOfDayCardH, tr(STR_STATS_TIME_OF_DAY), layout);
@@ -667,12 +703,14 @@ void renderPerBookStatsPage(GfxRenderer& renderer, const MappedInputManager* map
     }
     drawPerBookStatsCard(renderer, cardX, y, cardW, topCardH, bookTitle, stats, progressPercent, hasEstimatedTimeLeft,
                          estimatedTimeLeftSeconds, layout);
+    if (showEditButton) {
+      gPerBookEditHit = Rect{cardX, y, cardW, topCardH};
+    }
   }
 
   if (showButtonHints && mappedInput) {
-    const auto labels = mappedInput->mapLabels(tr(STR_BACK), "", showEditButton ? tr(STR_EDIT) : "",
-                                               showMoreButton ? tr(STR_MORE) : "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    drawStatsFrontChrome(renderer, mappedInput, tr(STR_BACK), "", showEditButton ? tr(STR_EDIT) : "",
+                         showMoreButton ? tr(STR_MORE) : "");
   }
 }
 
@@ -726,8 +764,7 @@ void renderGlobalStatsPage(GfxRenderer& renderer, const MappedInputManager* mapp
   }
 
   if (showButtonHints && mappedInput) {
-    const auto labels = mappedInput->mapLabels(tr(STR_BACK), tr(STR_HOME), "", showMoreButton ? tr(STR_MORE) : "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    drawStatsFrontChrome(renderer, mappedInput, tr(STR_BACK), tr(STR_HOME), "", showMoreButton ? tr(STR_MORE) : "");
   }
 }
 
@@ -772,8 +809,7 @@ void renderNoRtcCombinedStatsPage(GfxRenderer& renderer, const MappedInputManage
   }
 
   if (showButtonHints && mappedInput) {
-    const auto labels = mappedInput->mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    drawStatsFrontChrome(renderer, mappedInput, tr(STR_BACK), "", "", "");
   }
 }
 
@@ -798,7 +834,6 @@ void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* ma
   drawTouchBtn(renderer, layout.done, tr(STR_DONE), UI_12_FONT_ID, false);
 
   if (showButtonHints && mappedInput) {
-    const auto labels = mappedInput->mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    drawStatsFrontChrome(renderer, mappedInput, tr(STR_BACK), "", "", "");
   }
 }
