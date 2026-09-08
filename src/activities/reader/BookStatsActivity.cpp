@@ -236,9 +236,10 @@ void BookStatsActivity::exitStatsActivity(const bool /*viaBack*/) {
 }
 
 void BookStatsActivity::loop() {
-  // Soft footer slots (L→R): Back | (Home/empty) | Edit | More — match mapLabels paint.
-  // X4 Pro has no physical Down/Right for More; soft-chrome hit-test is off when
-  // Home pad is present, so we handle the strip explicitly.
+  // Soft footer slots (L→R). Per-book: Back | empty | Edit | More.
+  // Edit-dates: Back | Next Field | Up | Down. wasScreenTapped consumes the
+  // tap, so MappedInputManager soft-chrome never sees it — handle the strip
+  // here (Pro has no physical Back/Confirm).
   auto footerSlotAt = [this](const int tx, const int ty) -> int {
     const int pageW = renderer.getScreenWidth();
     const int pageH = renderer.getScreenHeight();
@@ -294,6 +295,22 @@ void BookStatsActivity::loop() {
         }
         return;
       }
+      if (page == Page::EditDates) {
+        if (slot == 1) {
+          cycleEditField();
+          requestUpdate();
+          return;
+        }
+        if (slot == 2) {
+          adjustSelectedDateField(-1);
+          return;
+        }
+        if (slot == 3) {
+          adjustSelectedDateField(1);
+          return;
+        }
+        return;
+      }
       if (page == Page::PerBook && slot == 2 && hasEditableBook()) {
         page = Page::EditDates;
         requestUpdate();
@@ -314,6 +331,18 @@ void BookStatsActivity::loop() {
         return;
       }
       return;
+    }
+    if (page == Page::EditDates) {
+      const int field = editBookDateFieldAt(renderer, tx, ty);
+      if (field >= 0) {
+        if (field == selectedEditField) {
+          adjustSelectedDateField(1);
+        } else {
+          selectedEditField = field;
+          requestUpdate();
+        }
+        return;
+      }
     }
   }
 

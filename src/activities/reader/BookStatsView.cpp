@@ -465,6 +465,31 @@ void drawGlobalStatsCard(GfxRenderer& renderer, const int x, const int y, const 
   cell(2, rowY1, rowH1, buf, tr(STR_STATS_LONGEST_STREAK_LBL));
 }
 
+constexpr int kDateCardY = 138;
+constexpr int kDateSectionGap = 104;
+constexpr int kDateMonthW = 52;
+constexpr int kDateDayW = 46;
+constexpr int kDateYearW = 68;
+constexpr int kDateFieldGap = 14;
+
+void dateFieldRect(const GfxRenderer& renderer, const int field, int& x, int& y, int& w, int& h) {
+  const int pageWidth = renderer.getScreenWidth();
+  const int cardW = pageWidth - 120;
+  const int cardX = (pageWidth - cardW) / 2;
+  const int row1Y = kDateCardY + 66;
+  const int widths[3] = {kDateMonthW, kDateDayW, kDateYearW};
+  const int col = field % 3;
+  const int totalW = kDateMonthW + kDateFieldGap + kDateDayW + kDateFieldGap + kDateYearW;
+  int colX = cardX + (cardW - totalW) / 2;
+  for (int i = 0; i < col; ++i) {
+    colX += widths[i] + kDateFieldGap;
+  }
+  x = colX;
+  y = (field / 3) == 0 ? row1Y : (row1Y + kDateSectionGap);
+  w = widths[col];
+  h = renderer.getLineHeight(UI_12_FONT_ID) + 10;
+}
+
 void drawDateField(const GfxRenderer& renderer, const int x, const int y, const int w, const char* text,
                    const bool selected) {
   const int h = renderer.getLineHeight(UI_12_FONT_ID) + 10;
@@ -474,6 +499,18 @@ void drawDateField(const GfxRenderer& renderer, const int x, const int y, const 
   drawCenteredLabel(renderer, UI_12_FONT_ID, x, w, y + 5, text);
 }
 }  // namespace
+
+int editBookDateFieldAt(const GfxRenderer& renderer, const int tx, const int ty) {
+  constexpr int kPad = 10;
+  for (int i = 0; i < 6; ++i) {
+    int x = 0, y = 0, w = 0, h = 0;
+    dateFieldRect(renderer, i, x, y, w, h);
+    if (tx >= x - kPad && tx < x + w + kPad && ty >= y - kPad && ty < y + h + kPad) {
+      return i;
+    }
+  }
+  return -1;
+}
 
 void renderPerBookStatsPage(GfxRenderer& renderer, const MappedInputManager* mappedInput, const std::string& bookTitle,
                             const BookReadingStats& stats, const float progressPercent, const bool hasEstimatedTimeLeft,
@@ -649,28 +686,17 @@ void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* ma
   renderer.clearScreen();
   CompactHeader::drawTitle(renderer, tr(STR_READING_STATS));
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int cardW = pageWidth - 120;
   const int cardH = 250;
   const int cardX = (pageWidth - cardW) / 2;
-  const int cardY = 138;
+  const int cardY = kDateCardY;
 
   const std::string visibleTitle =
       renderer.truncatedText(UI_12_FONT_ID, bookTitle.c_str(), pageWidth - 80, EpdFontFamily::BOLD);
   renderer.drawCenteredText(UI_12_FONT_ID, 96, visibleTitle.c_str(), true, EpdFontFamily::BOLD);
   // Outer panel only (no title divider) — date fields sit inside.
   renderer.drawRoundedRect(cardX, cardY, cardW, cardH, kStatsCardStroke, kStatsCardCornerRadius, true);
-
-  const int sectionGap = 104;
-  const int row1Y = cardY + 66;
-  const int row2Y = row1Y + sectionGap;
-  const int monthW = 52;
-  const int dayW = 46;
-  const int yearW = 68;
-  const int gap = 14;
-  const int totalFieldW = monthW + gap + dayW + gap + yearW;
-  const int fieldStartX = cardX + (cardW - totalFieldW) / 2;
 
   char monthBuf[8];
   char dayBuf[8];
@@ -686,11 +712,17 @@ void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* ma
     snprintf(dayBuf, sizeof(dayBuf), "-");
     snprintf(yearBuf, sizeof(yearBuf), "-");
   }
-  drawDateField(renderer, fieldStartX, row1Y, monthW, monthBuf, selectedField == 0);
-  drawDateField(renderer, fieldStartX + monthW + gap, row1Y, dayW, dayBuf, selectedField == 1);
-  drawDateField(renderer, fieldStartX + monthW + gap + dayW + gap, row1Y, yearW, yearBuf, selectedField == 2);
+  int fx = 0, fy = 0, fw = 0, fh = 0;
+  (void)fh;
+  dateFieldRect(renderer, 0, fx, fy, fw, fh);
+  drawDateField(renderer, fx, fy, fw, monthBuf, selectedField == 0);
+  dateFieldRect(renderer, 1, fx, fy, fw, fh);
+  drawDateField(renderer, fx, fy, fw, dayBuf, selectedField == 1);
+  dateFieldRect(renderer, 2, fx, fy, fw, fh);
+  drawDateField(renderer, fx, fy, fw, yearBuf, selectedField == 2);
 
-  drawCenteredLabel(renderer, UI_10_FONT_ID, cardX, cardW, cardY + 24 + sectionGap, tr(STR_STATS_FINISHED_DATE), true);
+  drawCenteredLabel(renderer, UI_10_FONT_ID, cardX, cardW, cardY + 24 + kDateSectionGap, tr(STR_STATS_FINISHED_DATE),
+                    true);
   const bool showFinishedFields = stats.isCompleted && stats.finishedDate.isValid();
   formatReadingStatsMonthToken(showFinishedFields ? stats.finishedDate : ReadingStatsDate{}, monthBuf,
                                sizeof(monthBuf));
@@ -701,9 +733,12 @@ void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* ma
     snprintf(dayBuf, sizeof(dayBuf), "-");
     snprintf(yearBuf, sizeof(yearBuf), "-");
   }
-  drawDateField(renderer, fieldStartX, row2Y, monthW, monthBuf, selectedField == 3);
-  drawDateField(renderer, fieldStartX + monthW + gap, row2Y, dayW, dayBuf, selectedField == 4);
-  drawDateField(renderer, fieldStartX + monthW + gap + dayW + gap, row2Y, yearW, yearBuf, selectedField == 5);
+  dateFieldRect(renderer, 3, fx, fy, fw, fh);
+  drawDateField(renderer, fx, fy, fw, monthBuf, selectedField == 3);
+  dateFieldRect(renderer, 4, fx, fy, fw, fh);
+  drawDateField(renderer, fx, fy, fw, dayBuf, selectedField == 4);
+  dateFieldRect(renderer, 5, fx, fy, fw, fh);
+  drawDateField(renderer, fx, fy, fw, yearBuf, selectedField == 5);
 
   if (showButtonHints && mappedInput) {
     const auto labels = mappedInput->mapLabels(tr(STR_BACK), tr(STR_NEXT_FIELD), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

@@ -24,3 +24,6 @@ void renderNoRtcCombinedStatsPage(GfxRenderer& renderer, const MappedInputManage
 
 void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* mappedInput, const std::string& bookTitle,
                              const BookReadingStats& stats, int selectedField, bool showButtonHints);
+
+// 0–5: start month/day/year then finished month/day/year. -1 if the tap misses.
+int editBookDateFieldAt(const GfxRenderer& renderer, int tx, int ty);
