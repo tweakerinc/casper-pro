@@ -237,9 +237,7 @@ void BookStatsActivity::exitStatsActivity(const bool /*viaBack*/) {
 
 void BookStatsActivity::loop() {
   // Soft footer slots (L→R). Per-book: Back | empty | Edit | More.
-  // Edit-dates: Back | Next Field | Up | Down. wasScreenTapped consumes the
-  // tap, so MappedInputManager soft-chrome never sees it — handle the strip
-  // here (Pro has no physical Back/Confirm).
+  // Equal quarters match Bare/Penumbra painted captions (not the 80px key cutouts).
   auto footerSlotAt = [this](const int tx, const int ty) -> int {
     const int pageW = renderer.getScreenWidth();
     const int pageH = renderer.getScreenHeight();
@@ -268,6 +266,47 @@ void BookStatsActivity::loop() {
     return;
   }
 
+  // Edit dates: ClockOffset order. Logical Back/Confirm/Up/Down pick up Pro
+  // pills in any orientation (softChromeReleasedSlot). A bottom-only
+  // footerSlotAt misses landscape chrome; reading Up/Down before this page
+  // would treat those pills as Per-book Edit/More shortcuts.
+  if (page == Page::EditDates) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      saveStats();
+      page = Page::PerBook;
+      requestUpdate();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      cycleEditField();
+      requestUpdate();
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
+        mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+      adjustSelectedDateField(-1);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
+        mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+      adjustSelectedDateField(1);
+      return;
+    }
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      const int field = editBookDateFieldAt(renderer, tx, ty);
+      if (field >= 0) {
+        if (field == selectedEditField) {
+          adjustSelectedDateField(1);
+        } else {
+          selectedEditField = field;
+          requestUpdate();
+        }
+      }
+    }
+    return;
+  }
+
   const bool editShortcutPressed = mappedInput.wasPressed(MappedInputManager::Button::Up) ||
                                    mappedInput.wasPressed(MappedInputManager::Button::Left);
   const bool moreShortcutPressed = mappedInput.wasPressed(MappedInputManager::Button::Down) ||
@@ -279,12 +318,7 @@ void BookStatsActivity::loop() {
     const int slot = footerSlotAt(tx, ty);
     if (slot >= 0) {
       if (slot == 0) {
-        // Back
-        if (page == Page::EditDates) {
-          saveStats();
-          page = Page::PerBook;
-          requestUpdate();
-        } else if (page == Page::PerBook) {
+        if (page == Page::PerBook) {
           exitStatsActivity(true);
         } else if (page == Page::ThisDevice) {
           page = Page::PerBook;
@@ -292,22 +326,6 @@ void BookStatsActivity::loop() {
         } else if (page == Page::AllDevices) {
           page = Page::ThisDevice;
           requestUpdate();
-        }
-        return;
-      }
-      if (page == Page::EditDates) {
-        if (slot == 1) {
-          cycleEditField();
-          requestUpdate();
-          return;
-        }
-        if (slot == 2) {
-          adjustSelectedDateField(-1);
-          return;
-        }
-        if (slot == 3) {
-          adjustSelectedDateField(1);
-          return;
         }
         return;
       }
@@ -332,43 +350,6 @@ void BookStatsActivity::loop() {
       }
       return;
     }
-    if (page == Page::EditDates) {
-      const int field = editBookDateFieldAt(renderer, tx, ty);
-      if (field >= 0) {
-        if (field == selectedEditField) {
-          adjustSelectedDateField(1);
-        } else {
-          selectedEditField = field;
-          requestUpdate();
-        }
-        return;
-      }
-    }
-  }
-
-  if (page == Page::EditDates) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      saveStats();
-      page = Page::PerBook;
-      requestUpdate();
-      return;
-    }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      cycleEditField();
-      requestUpdate();
-      return;
-    }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Left)) {
-      adjustSelectedDateField(-1);
-      return;
-    }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Right)) {
-      adjustSelectedDateField(1);
-      return;
-    }
-    return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
