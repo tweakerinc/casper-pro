@@ -428,18 +428,30 @@ void SleepActivity::renderLastScreenSleepScreen() const {
   // top status-bar row (same edge as battery/clock in the live reading orientation).
   // Reader onExit forces Portrait; drawAtTopChrome re-applies SETTINGS.orientation
   // so Landscape CCW/CW does not place the moon on a portrait corner.
-  // Both devices: differential FAST only (moon ink delta) — no HALF scrub flash.
-  // Do not use displayGrayscaleBase here: AA-pre-BW mid is greyscale preconditioning
-  // and leaves white muddy when no grey planes follow (v0.1.3 used plain FAST).
-  // Clock AA / reader AA leave greyscale on glass with a restored BW framebuffer.
-  // FAST then diffs those planes into a black/messed sleep image. HALF first when
-  // greys are on the panel so the moon overlay matches the glass. Pure BW last-frame
-  // stays differential FAST.
+  //
+  // Full-frame FAST on Pro writes RED=~FB and redrives every pixel — the last
+  // page goes muddy. Pro HALF is OEM 0xF7 (hang / OTP flash). Window the moon
+  // only, matching the instant-feedback paint in enterDeepSleep.
   SleepChromeIcon::drawAtTopChrome(renderer, MoonIcon, MOONICON_WIDTH, MOONICON_HEIGHT);
   if (UiGhostPolicy::panelHoldsGreyscale()) {
-    UiGhostPolicy::displayHalf(renderer);
+    // FAST over AA greys diffs into mud. X3 HALF can flatten them; Pro 0xF7
+    // cannot. Leave the last page as-is (moon stays in the FB for wake re-seed).
+    if (gpio.deviceIsX3()) {
+      UiGhostPolicy::displayHalf(renderer);
+    }
+    return;
+  }
+  const int moonX = SleepChromeIcon::leftX(renderer);
+  const int moonY = SleepChromeIcon::topY(renderer);
+  const int moonSize = SleepChromeIcon::iconSize(renderer);
+  const bool readerOnlyDark =
+      SETTINGS.readerDarkMode != 0 && SETTINGS.darkModeReaderOnly != 0 && APP_STATE.lastSleepFromReader;
+  if (readerOnlyDark) {
+    renderer.invertScreen();
+    UiGhostPolicy::displayPartialOrSoft(renderer, moonX, moonY, moonSize, moonSize);
+    renderer.invertScreen();
   } else {
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    UiGhostPolicy::displayPartialOrSoft(renderer, moonX, moonY, moonSize, moonSize);
   }
 }
 
