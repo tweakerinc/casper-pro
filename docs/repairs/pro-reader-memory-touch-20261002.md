@@ -30,6 +30,10 @@ Baseline: `cursor/x4pro-sleep-reader-menu-6b98` at
   versions. Check serialized record sizes, cursor ordering, counts, strings,
   trailing data and long temporary paths before trusting caches. Never save a
   failed/partial IR or page. Release retained page/IR storage on clear.
+- Validate cached page/map cursors against actual block/run bounds and UTF-8
+  boundaries, require the true chapter start, reject false chapter-end flags and
+  map/paint disagreements, and validate reflow anchors before mutating state.
+  Seven new reproductions failed before these guards and passed after them.
 - The legacy HTML-prefix limit is now explicitly partial and is not cached as a
   complete chapter. This is NOT a complete streaming solution for large chapters.
 - X4 Pro uses its own OTA release feed and accepts board-labelled application
@@ -45,7 +49,7 @@ Baseline: `cursor/x4pro-sleep-reader-menu-6b98` at
 
 `bash test/pro_repairs/run.sh /tmp/casper-pro-tests`
 
-51 native regression tests passed locally with AddressSanitizer,
+58 native regression tests passed locally with AddressSanitizer,
 UndefinedBehaviorSanitizer, leak checking and exceptions disabled. Includes
 forced realloc failures, corrupt files, long UTF-8 text, brightness ownership,
 font ladders, layout measure/paint cursor agreement, real-engine same-passage
@@ -54,9 +58,12 @@ renderer metrics, a memory filesystem and a no-pattern hyphenation fixture.
 They do NOT validate real font glyph files, display waveforms, I2C touch,
 physical brightness, sleep current, flash writes or book-format fidelity.
 
-The unchanged baseline compiled for X4 Pro; its C3 job failed at the missing
-frontlight symbol above. Candidate firmware compilation is a separate check;
-consult the repair branch's Actions results, not the baseline build.
+The main repair commit `1ac65e3210a3d531e0788cd8c7cbc1d7d14b8cad` passed
+51 native tests on GitHub Actions and compiled successfully for both X4 Pro
+and shared C3 in run `37051902219`. The seven additional cursor tests bring
+the local suite to 58; final follow-up CI must validate this exact revision.
+No hardware has been flashed or tested. The earlier unchanged C3 baseline
+failed to link; the repaired C3 build confirms the frontlight stub resolves it.
 
 ## Not a finished release
 

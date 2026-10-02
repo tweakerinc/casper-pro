@@ -16,6 +16,25 @@
 #include "HtmlToIr.h"
 
 namespace rivulet {
+namespace {
+// Cache cursors are untrusted: normalizing an invalid cursor during layout can
+// repeat/skip text. Validate against the actual resident IR before accepting it.
+bool validChapterCursor(const ChapterIr& chapter, const IrCursor& c, const bool allowEnd = false) {
+  if (chapter.empty()) return false;
+  if (c.blockIndex == chapter.blockCount()) return allowEnd && c.runIndex == 0 && c.byteInRun == 0;
+  if (c.blockIndex > chapter.blockCount()) return false;
+  const Block& b = chapter.blocks()[c.blockIndex];
+  if (b.runCount == 0) return c.runIndex == b.runBegin && c.byteInRun == 0;
+  const size_t runEnd = static_cast<size_t>(b.runBegin) + b.runCount;
+  if (c.runIndex < b.runBegin || c.runIndex >= runEnd || c.runIndex >= chapter.runs().size()) return false;
+  const Run& r = chapter.runs()[c.runIndex];
+  if (c.byteInRun > r.textLen) return false;
+  // A cursor at the run end is safe; any interior offset must begin a code point.
+  return c.byteInRun == r.textLen ||
+         (static_cast<unsigned char>(chapter.runText(r)[c.byteInRun]) & 0xc0u) != 0x80u;
+}
+}  // namespace
+
 
 void RivuletEngine::clear() {
   chapter_.clear();
@@ -34,7 +53,7 @@ void RivuletEngine::clear() {
 
 bool RivuletEngine::reflowToCursor(const GfxRenderer& renderer, const RenderKey& key, const float lc,
                                     const IrCursor& anchor, const int maxPages, const uint32_t maxMillis) {
-  if (chapter_.empty() || anchor.blockIndex >= chapter_.blockCount() || maxPages <= 0) return false;
+  if (!validChapterCursor(chapter_, anchor) || maxPages <= 0) return false;
   if (key_ == key && lineCompression_ == lc && laidOutValid_) return true;
   const RenderKey oldKey = key_;
   const float oldLc = lineCompression_;
@@ -154,35 +173,34 @@ bool RivuletEngine::tryLoadPageCache(const int pageIndex) {
   if (!pageCachePath(pageIndex, path, sizeof(path))) return false;
   LaidOutPage tmp;
   if (!tmp.loadFromFile(path, key_, pageIndex)) return false;
-  // Reject caches whose IR cursors cannot belong to the loaded chapter (defense
-  // in depth if a path ever collides again).
-  const uint32_t blocks = static_cast<uint32_t>(chapter_.blockCount());
-  if (blocks > 0 && (tmp.start.blockIndex >= blocks || tmp.end.blockIndex > blocks)) {
+  const bool endsChapter = tmp.end.blockIndex == chapter_.blockCount();
+  if (!validChapterCursor(chapter_, tmp.start) || !validChapterCursor(chapter_, tmp.end, true) ||
+      !(tmp.start < tmp.end) || tmp.atChapterEnd != endsChapter) {
     Storage.remove(path);
     return false;
   }
-  // Must agree with the page-map cursor when present — stale IR/map would skip text.
-  if (map_.hasPage(pageIndex) && tmp.start != map_.pageStart(pageIndex)) {
+  // A cached paint must not rewrite a contradictory known map: discard it and
+  // let live layout decide. Otherwise a corrupt end cursor can skip valid text.
+  if ((map_.hasPage(pageIndex) && tmp.start != map_.pageStart(pageIndex)) ||
+      (map_.hasPage(pageIndex + 1) &&
+       (tmp.atChapterEnd || tmp.end != map_.pageStart(pageIndex + 1)))) {
     Storage.remove(path);
     return false;
   }
   if (!map_.hasPage(pageIndex)) {
-    // Only accept orphan cache for page 0 into an empty map (seed continuity).
-    if (!(pageIndex == 0 && map_.empty())) return false;
+    const IrCursor first{0, chapter_.blocks()[0].runBegin, 0};
+    if (!(pageIndex == 0 && map_.empty() && tmp.start == first)) return false;
     map_.setRenderKey(key_);
     if (!map_.resetWithStart(tmp.start)) { lastTurnFail_ = TurnFail::LayoutFailed; return false; }
+  }
+  // Finish fallible index growth before publishing the cached page.
+  if (!tmp.atChapterEnd && !map_.hasPage(pageIndex + 1) && !map_.pushPageStart(tmp.end)) {
+    lastTurnFail_ = TurnFail::LayoutFailed;
+    return false;
   }
   laidOut_ = std::move(tmp);
   laidOutValid_ = true;
   currentPage_ = pageIndex;
-  if (!laidOut_.atChapterEnd) {
-    const int nextIdx = pageIndex + 1;
-    if (!map_.hasPage(nextIdx)) {
-      if (!map_.pushPageStart(laidOut_.end)) { lastTurnFail_ = TurnFail::LayoutFailed; return false; }
-    } else if (map_.pageStart(nextIdx) != laidOut_.end) {
-      if (!map_.setPageStart(nextIdx, laidOut_.end)) { lastTurnFail_ = TurnFail::LayoutFailed; return false; }
-    }
-  }
   LOG_DBG("RVEN", "page cache HIT p=%d spans=%u", pageIndex, static_cast<unsigned>(laidOut_.spans.size()));
   return true;
 }
@@ -368,30 +386,13 @@ bool RivuletEngine::loadPageMap(const char* mapPath) {
     LOG_DBG("RVEN", "page map key mismatch — ignoring");
     return false;
   }
-  // Reject maps whose cursors fall outside the loaded IR (stale after reconvert).
-  if (!chapter_.empty()) {
-    const auto& blocks = chapter_.blocks();
-    const size_t nRuns = chapter_.runs().size();
-    for (int i = 0; i < m.knownPages(); ++i) {
-      const IrCursor c = m.pageStart(i);
-      if (c.blockIndex >= blocks.size()) {
-        LOG_DBG("RVEN", "page map cursor OOB page=%d block=%u — ignoring", i,
-                static_cast<unsigned>(c.blockIndex));
-        return false;
-      }
-      if (static_cast<size_t>(c.runIndex) > nRuns) {
-        LOG_DBG("RVEN", "page map run OOB page=%d run=%u — ignoring", i, static_cast<unsigned>(c.runIndex));
-        return false;
-      }
-      const Block& b = blocks[c.blockIndex];
-      const uint32_t runEnd = static_cast<uint32_t>(b.runBegin) + b.runCount;
-      // Allow runIndex == runEnd only as empty-block edge; anything past is stale.
-      if (b.runCount > 0 && c.runIndex >= runEnd) {
-        LOG_DBG("RVEN", "page map run outside block page=%d run=%u blockRuns=[%u+%u) — ignoring", i,
-                static_cast<unsigned>(c.runIndex), static_cast<unsigned>(b.runBegin),
-                static_cast<unsigned>(b.runCount));
-        return false;
-      }
+  if (chapter_.empty() || m.empty()) return false;
+  const IrCursor first{0, chapter_.blocks()[0].runBegin, 0};
+  if (m.pageStart(0) != first) return false;
+  for (int i = 0; i < m.knownPages(); ++i) {
+    if (!validChapterCursor(chapter_, m.pageStart(i))) {
+      LOG_DBG("RVEN", "page map invalid IR cursor page=%d - ignoring", i);
+      return false;
     }
   }
   map_ = std::move(m);

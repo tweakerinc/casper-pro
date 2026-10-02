@@ -121,10 +121,70 @@ static bool ota_rejects_overflow_truncation_empty() {
   CHECK(!parsePro(asset(std::string(120,'a')+"-x4pro.bin")));
   CHECK(!parsePro(asset("firmware-x4pro.bin","100000","https://example.org/"+std::string(600,'x'))));return true;
 }
+
+static bool map_rejects_run_before_block() {
+  GfxRenderer g; RivuletEngine e; CHECK(setup(e,g));
+  PageMap m; m.setRenderKey(key());
+  CHECK(m.resetWithStart({0,e.chapter().blocks()[0].runBegin,0}));
+  CHECK(e.chapter().blocks()[1].runBegin > 0);
+  CHECK(m.pushPageStart({1,static_cast<uint16_t>(e.chapter().blocks()[1].runBegin-1),0}));
+  CHECK(m.saveToFile("/bad-map")); CHECK(!e.loadPageMap("/bad-map")); return true;
+}
+static bool map_rejects_offset_outside_run() {
+  GfxRenderer g; RivuletEngine e; CHECK(setup(e,g));
+  PageMap m; m.setRenderKey(key());
+  CHECK(m.resetWithStart({0,e.chapter().blocks()[0].runBegin,0}));
+  CHECK(m.pushPageStart({0,e.chapter().blocks()[0].runBegin,65535}));
+  CHECK(m.saveToFile("/bad-map")); CHECK(!e.loadPageMap("/bad-map")); return true;
+}
+static bool map_rejects_mid_utf8_cursor() {
+  GfxRenderer g; RivuletEngine e; e.setRenderKey(key());
+  CHECK(e.ingestHtml("<p>A\xc3\xa9Z alpha bravo charlie.</p>",nullptr)); CHECK(e.goToStart(g));
+  const auto ri=e.chapter().blocks()[0].runBegin;
+  CHECK(static_cast<unsigned char>(e.chapter().runText(e.chapter().runs()[ri])[2])==0xa9);
+  PageMap m; m.setRenderKey(key()); CHECK(m.resetWithStart({0,ri,0}));
+  CHECK(m.pushPageStart({0,ri,2})); CHECK(m.saveToFile("/utf8-map"));
+  CHECK(!e.loadPageMap("/utf8-map")); return true;
+}
+static bool map_requires_chapter_start_and_accepts_real_map() {
+  GfxRenderer g; RivuletEngine e; CHECK(setup(e,g,12));
+  CHECK(e.savePageMap("/good-map")); CHECK(e.loadPageMap("/good-map"));
+  PageMap m; m.setRenderKey(key()); CHECK(m.resetWithStart({1,e.chapter().blocks()[1].runBegin,0}));
+  CHECK(m.saveToFile("/skipped-start")); CHECK(!e.loadPageMap("/skipped-start")); return true;
+}
+static std::string pagePath(int index) {
+  const auto k=key(); const uint32_t fp=static_cast<uint32_t>(k.fontId) ^ (static_cast<uint32_t>(k.viewportW)<<16) ^
+    (static_cast<uint32_t>(k.viewportH)<<8) ^ k.flags ^ k.pad ^ (static_cast<uint32_t>(k.lineCompressionQ8)<<4);
+  char path[120]; std::snprintf(path,sizeof(path),"/pages/s0_p%d_%08x.rvpg",index,fp); return path;
+}
+static bool cache_rejects_invalid_end_cursor() {
+  GfxRenderer g; RivuletEngine e; CHECK(setup(e,g)); const auto correctEnd=e.page().end;
+  LaidOutPage bad=e.page(); bad.end={0,e.chapter().blocks()[0].runBegin,65535};
+  bad.spans[0].text="CORRUPT CACHE"; CHECK(bad.saveToFile(pagePath(0).c_str(),key(),0));
+  e.setPageCacheDir("/pages"); e.setPageCacheSpine(0); CHECK(e.goToPage(g,0));
+  CHECK(e.page().end==correctEnd&&e.page().spans[0].text!="CORRUPT CACHE"); return true;
+}
+static bool cache_rejects_false_end_and_map_disagreement() {
+  GfxRenderer g; RivuletEngine e; CHECK(setup(e,g)); const auto correctEnd=e.page().end;
+  e.setPageCacheDir("/pages"); e.setPageCacheSpine(0); CHECK(e.goToPage(g,0));
+  LaidOutPage bad=e.page(); bad.atChapterEnd=true; bad.spans[0].text="FALSE END";
+  CHECK(bad.saveToFile(pagePath(0).c_str(),key(),0)); CHECK(e.goToPage(g,0));
+  CHECK(!e.page().atChapterEnd&&e.page().spans[0].text!="FALSE END");
+  bad=e.page(); bad.end={static_cast<uint16_t>(correctEnd.blockIndex+1),
+    e.chapter().blocks()[correctEnd.blockIndex+1].runBegin,0}; bad.spans[0].text="SKIPPED TEXT";
+  CHECK(bad.saveToFile(pagePath(0).c_str(),key(),0)); CHECK(e.goToPage(g,0));
+  CHECK(e.page().end==correctEnd&&e.page().spans[0].text!="SKIPPED TEXT"); return true;
+}
+static bool reflow_rejects_invalid_anchor_without_mutation() {
+  GfxRenderer g; RivuletEngine e; CHECK(setup(e,g,12)); const auto oldStart=e.page().start;
+  CHECK(!e.reflowToCursor(g,key(-9002),1,{0,e.chapter().blocks()[0].runBegin,65535},300,0));
+  CHECK(e.page().start==oldStart&&e.currentPage()==12&&e.renderKey()==key()); return true;
+}
+
 int main(){
   struct T{const char* name;bool(*fn)();};
 #define TST(f) T{#f,f}
-  const T tests[]={TST(brightness_hold_does_not_jump),TST(brightness_relative_drag_and_release),TST(brightness_bounds_and_cancel),TST(bottom_left_swipe_does_not_arm_brightness),TST(drawer_geometry_portrait_landscape),TST(literata_alias_uses_real_rung),TST(sd_ladder_supports_negative_ids),TST(measure_paint_same_cursor),TST(reflow_preserves_passage),TST(reflow_budget_rolls_back),TST(reflow_oom_rolls_back),TST(tokenizer_oom_is_not_end_or_skipped_block),TST(html_prefix_not_cached_as_complete),TST(ota_requires_pro_application_asset),TST(ota_rejects_overflow_truncation_empty)};
+  const T tests[]={TST(brightness_hold_does_not_jump),TST(brightness_relative_drag_and_release),TST(brightness_bounds_and_cancel),TST(bottom_left_swipe_does_not_arm_brightness),TST(drawer_geometry_portrait_landscape),TST(literata_alias_uses_real_rung),TST(sd_ladder_supports_negative_ids),TST(measure_paint_same_cursor),TST(reflow_preserves_passage),TST(reflow_budget_rolls_back),TST(reflow_oom_rolls_back),TST(tokenizer_oom_is_not_end_or_skipped_block),TST(html_prefix_not_cached_as_complete),TST(ota_requires_pro_application_asset),TST(ota_rejects_overflow_truncation_empty),TST(map_rejects_run_before_block),TST(map_rejects_offset_outside_run),TST(map_rejects_mid_utf8_cursor),TST(map_requires_chapter_start_and_accepts_real_map),TST(cache_rejects_invalid_end_cursor),TST(cache_rejects_false_end_and_map_disagreement),TST(reflow_rejects_invalid_anchor_without_mutation)};
   int failed=0;for(const auto&t:tests){failAfter=-1;ESP.reset();Storage.reset();fakeMillis=0;setStyleLadderFillHook(nullptr,nullptr);const bool ok=t.fn();std::printf("%s %s\n",ok?"PASS":"FAIL",t.name);failed+=!ok;}
   std::printf("%zu tests, %d failures\n",sizeof(tests)/sizeof(*tests),failed);return failed?1:0;
 }
