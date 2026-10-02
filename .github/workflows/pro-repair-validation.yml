@@ -1,0 +1,36 @@
+name: Pro repair validation
+
+on:
+  push:
+    branches: [fix/pro-reader-memory-touch-20261002]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pro-repair-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive tracked source and identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pro-repair-source
+          git archive --format=tar.gz HEAD > /tmp/pro-repair-source/casper-pro-source.tar.gz
+          git rev-parse HEAD > /tmp/pro-repair-source/SOURCE_COMMIT.txt
+          sha256sum /tmp/pro-repair-source/casper-pro-source.tar.gz > /tmp/pro-repair-source/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: casper-pro-repair-source-${{ github.sha }}
+          path: /tmp/pro-repair-source/
+          retention-days: 7
+          if-no-files-found: error
