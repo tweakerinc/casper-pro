@@ -2,6 +2,9 @@ name: Pro firmware build check
 on:
   push:
     branches: [fix/pro-reader-memory-touch-20261002]
+    paths: ['src/**', 'lib/**', 'freeink-sdk/**', 'scripts/**', 'platformio.ini', 'partitions*.csv']
+  pull_request:
+    branches: [main, cursor/x4pro-sleep-reader-menu-6b98]
   workflow_dispatch:
 permissions:
   contents: read
