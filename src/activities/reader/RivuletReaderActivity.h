@@ -11,6 +11,7 @@
 #include "BookReadingStats.h"
 #include "BookmarkEntry.h"
 #include "GlobalReadingStats.h"
+#include "activities/settings/BookAppearanceState.h"
 #include "ReaderUtils.h"
 #include "activities/Activity.h"
 #include "activities/ActivityResult.h"
@@ -33,6 +34,8 @@ class RivuletReaderActivity final : public Activity {
   bool handleMenuGesture() override;
   // Home pad on the book page: save + leave (not a no-op under hierarchical Home).
   bool handleHomeGesture() override;
+  bool handleBookAppearanceGesture() override;
+  bool capturesGlobalTouch() const override { return appearanceOpen_; }
   ScreenshotInfo getScreenshotInfo() const override;
 
  private:
@@ -54,6 +57,12 @@ class RivuletReaderActivity final : public Activity {
   // paint Loading before applyOrientation). No-op if still resident.
   bool restoreAfterUi(bool showLoading = true);
   void configureRenderKey();
+  void paintBookAppearance();
+  void loopBookAppearance();
+  bool applyBookAppearance(const BookAppearanceState& desired);
+  bool closeBookAppearance();
+  void setAppearanceFamily(int index);
+  void adjustAppearanceSize(int direction);
   void showError(const char* msg);
   void renderStatusBar() const;
   void openReaderMenu();
@@ -154,6 +163,16 @@ class RivuletReaderActivity final : public Activity {
   void scheduleAaCatchUp();
   // Keep page glyph buffers only when free/maxAlloc leave room for next turn/UI.
   static bool canRetainGlyphCache();
+
+  bool appearanceOpen_ = false;
+  bool appearanceFontList_ = false;
+  uint8_t appearanceTab_ = 0;
+  int appearanceFontOffset_ = 0;
+  BookAppearanceState appearanceOriginal_{};
+  BookAppearanceState appearanceDesired_{};
+  rivulet::IrCursor appearanceAnchor_{};
+  uint32_t appearanceChangeMs_ = 0;
+  const char* appearanceMessage_ = nullptr;
 
   std::shared_ptr<Epub> epub_;
   rivulet::RivuletEngine engine_;

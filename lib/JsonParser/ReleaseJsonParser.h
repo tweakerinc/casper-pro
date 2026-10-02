@@ -7,7 +7,8 @@
 
 class ReleaseJsonParser {
  public:
-  ReleaseJsonParser();
+  enum class FirmwareTarget : uint8_t { LegacyC3, X4Pro };
+  explicit ReleaseJsonParser(FirmwareTarget target = FirmwareTarget::LegacyC3);
 
   ReleaseJsonParser(const ReleaseJsonParser&) = delete;
   ReleaseJsonParser& operator=(const ReleaseJsonParser&) = delete;
@@ -49,6 +50,8 @@ class ReleaseJsonParser {
 
   void commitAsset();
 
+  FirmwareTarget target_;
+  bool currentAssetInvalid = false;
   StreamingJsonParser parser;
 
   Position position;
@@ -62,7 +65,7 @@ class ReleaseJsonParser {
   bool tagFound;
   bool firmwareFound;
 
-  char currentAssetName[32];
+  char currentAssetName[96];
   char currentAssetUrl[512];
   size_t currentAssetSize;
 };

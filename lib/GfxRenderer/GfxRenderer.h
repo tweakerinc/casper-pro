@@ -129,6 +129,10 @@ class GfxRenderer {
   void removeFont(int fontId) {
     fontMap.erase(fontId);
     sdCardFonts_.erase(fontId);
+    for (auto it = fallbackFontMap_.begin(); it != fallbackFontMap_.end();) {
+      if (it->first == fontId || it->second == fontId) it = fallbackFontMap_.erase(it);
+      else ++it;
+    }
   }
   void setFontCacheManager(FontCacheManager* m) { fontCacheManager_ = m; }
   FontCacheManager* getFontCacheManager() const { return fontCacheManager_; }

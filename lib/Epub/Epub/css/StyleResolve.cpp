@@ -38,9 +38,8 @@ float s_paintLineCompression = 1.0f;
 bool s_paintEmbeddedStyle = true;
 
 int familyIndex(const int* ladder, int fontId) {
-  for (int i = 0; i < kReaderLadderLen; ++i) {
-    if (ladder[i] == fontId) return i;
-  }
+  for (int i = 1; i < kReaderLadderLen - 1; ++i) if (ladder[i] == fontId) return i;
+  for (int i : {0, kReaderLadderLen - 1}) if (ladder[i] == fontId) return i;
   return -1;
 }
 

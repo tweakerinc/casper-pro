@@ -58,6 +58,9 @@ class Activity {
   virtual bool handleHomeGesture() { return false; }
   // Top-left swipe-down menu (touch). Readers open the book menu; default no-op.
   virtual bool handleMenuGesture() { return false; }
+  virtual bool handleBookAppearanceGesture() { return false; }
+  // Modal content owns touch before global edge shortcuts.
+  virtual bool capturesGlobalTouch() const { return false; }
   virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
 
   // Start a new activity without destroying the current one

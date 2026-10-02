@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace {
 
@@ -13,9 +14,33 @@ void safeCopy(char* dst, size_t dstSize, const char* src, size_t srcLen) {
 
 // Casper release assets are named Casper-v0.1.0 or Casper-v0.1.0.bin.
 // Also accept plain firmware.bin (SD / upstream tooling).
-bool isFirmwareAssetName(const char* name) {
+bool isFirmwareAssetName(const char* name, const ReleaseJsonParser::FirmwareTarget target) {
   if (name == nullptr || name[0] == '\0') {
     return false;
+  }
+  if (target == ReleaseJsonParser::FirmwareTarget::X4Pro) {
+    // An ESP32-S3 image is not necessarily for this board (e.g. Sticky).
+    // Require a board-specific *application* asset, never a generic/merged bin.
+    char lower[96];
+    const size_t len = std::strlen(name);
+    if (len >= sizeof(lower)) return false;
+    for (size_t i = 0; i <= len; ++i) {
+      const char c = name[i];
+      lower[i] = c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c;
+    }
+    if (std::strcmp(lower, "firmware-x4pro.bin") == 0 ||
+        std::strcmp(lower, "casper-pro-x4pro.bin") == 0) return true;
+    constexpr char prefix[] = "casper-pro-v";
+    constexpr char suffix[] = "-x4pro.bin";
+    constexpr size_t pn = sizeof(prefix) - 1, sn = sizeof(suffix) - 1;
+    if (len <= pn + sn || std::strncmp(lower, prefix, pn) != 0 ||
+        std::strcmp(lower + len - sn, suffix) != 0) return false;
+    if (lower[pn] < '0' || lower[pn] > '9') return false;
+    for (size_t i = pn; i < len - sn; ++i) {
+      const char c = lower[i];
+      if (!(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'z') && c != '.' && c != '-') return false;
+    }
+    return true;
   }
   if (strcmp(name, "firmware.bin") == 0) {
     return true;
@@ -72,8 +97,8 @@ bool isFirmwareAssetName(const char* name) {
 
 }  // namespace
 
-ReleaseJsonParser::ReleaseJsonParser()
-    : parser(JsonCallbacks{this, sOnKey, sOnString, sOnNumber, sOnBool, sOnNull, sOnObjectStart, sOnObjectEnd,
+ReleaseJsonParser::ReleaseJsonParser(const FirmwareTarget target)
+    : target_(target), parser(JsonCallbacks{this, sOnKey, sOnString, sOnNumber, sOnBool, sOnNull, sOnObjectStart, sOnObjectEnd,
                            sOnArrayStart, sOnArrayEnd}) {
   reset();
 }
@@ -92,6 +117,7 @@ void ReleaseJsonParser::reset() {
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
   currentAssetSize = 0;
+  currentAssetInvalid = false;
 }
 
 void ReleaseJsonParser::feed(const char* data, size_t len) { parser.feed(data, len); }
@@ -103,7 +129,9 @@ const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 
 void ReleaseJsonParser::commitAsset() {
-  if (isFirmwareAssetName(currentAssetName)) {
+  if (!firmwareFound && !currentAssetInvalid && currentAssetSize > 0 &&
+      std::strncmp(currentAssetUrl, "https://", 8) == 0 &&
+      isFirmwareAssetName(currentAssetName, target_)) {
     memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
     firmwareSize = currentAssetSize;
     firmwareFound = true;
@@ -111,6 +139,7 @@ void ReleaseJsonParser::commitAsset() {
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
   currentAssetSize = 0;
+  currentAssetInvalid = false;
 }
 
 // -- SAX callbacks (static trampolines) -------------------------------------
@@ -152,17 +181,23 @@ void ReleaseJsonParser::sOnString(void* ctx, const char* value, size_t len) {
   switch (self->lastKey) {
     case LastKey::TAG_NAME:
       if (self->position == Position::TOP_LEVEL && self->depth == 1) {
-        safeCopy(self->tagName, sizeof(self->tagName), value, len);
-        self->tagFound = true;
+        self->tagFound = len > 0 && len < sizeof(self->tagName);
+        if (self->tagFound) safeCopy(self->tagName, sizeof(self->tagName), value, len);
       }
       break;
     case LastKey::ASSET_NAME:
-      if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1)
-        safeCopy(self->currentAssetName, sizeof(self->currentAssetName), value, len);
+      if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1) {
+        if (len >= sizeof(self->currentAssetName)) self->currentAssetInvalid = true;
+        else safeCopy(self->currentAssetName, sizeof(self->currentAssetName), value, len);
+      }
       break;
     case LastKey::ASSET_URL:
-      if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1)
-        safeCopy(self->currentAssetUrl, sizeof(self->currentAssetUrl), value, len);
+      if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1) {
+        // A full SAX token may already have been truncated by the generic
+        // parser. Refuse it rather than downloading from a partial URL.
+        if (len >= sizeof(self->currentAssetUrl) - 1) self->currentAssetInvalid = true;
+        else safeCopy(self->currentAssetUrl, sizeof(self->currentAssetUrl), value, len);
+      }
       break;
     default:
       break;
@@ -170,11 +205,21 @@ void ReleaseJsonParser::sOnString(void* ctx, const char* value, size_t len) {
   self->lastKey = LastKey::NONE;
 }
 
-void ReleaseJsonParser::sOnNumber(void* ctx, const char* value, size_t /*len*/) {
+void ReleaseJsonParser::sOnNumber(void* ctx, const char* value, size_t len) {
   auto* self = static_cast<ReleaseJsonParser*>(ctx);
 
   if (self->lastKey == LastKey::ASSET_SIZE && self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1) {
-    self->currentAssetSize = static_cast<size_t>(strtoul(value, nullptr, 10));
+    size_t n = 0;
+    if (len == 0) self->currentAssetInvalid = true;
+    for (size_t i = 0; i < len; ++i) {
+      if (value[i] < '0' || value[i] > '9' ||
+          n > (std::numeric_limits<size_t>::max() - static_cast<size_t>(value[i] - '0')) / 10) {
+        self->currentAssetInvalid = true;
+        return;
+      }
+      n = n * 10 + static_cast<size_t>(value[i] - '0');
+    }
+    self->currentAssetSize = n;
   }
   self->lastKey = LastKey::NONE;
 }
@@ -199,6 +244,7 @@ void ReleaseJsonParser::sOnObjectStart(void* ctx) {
       self->currentAssetName[0] = '\0';
       self->currentAssetUrl[0] = '\0';
       self->currentAssetSize = 0;
+      self->currentAssetInvalid = false;
       self->lastKey = LastKey::NONE;
       break;
     case Position::IN_ASSET_OBJECT:

@@ -22,6 +22,11 @@ class SdCardFontSystem {
   /// Also re-discovers if the registry has been marked dirty (e.g. by web upload).
   void ensureLoaded(GfxRenderer& renderer);
 
+  /// Try SETTINGS' selection and reflow while old faces remain registered.
+  /// Caller holds RenderLock, restores SETTINGS on false, and supplies a
+  /// transactional layout callback. This method never saves settings to disk.
+  bool tryApplyReaderSelection(GfxRenderer& renderer, bool (*reflow)(void*), void* context);
+
   /// Free resident SD font faces + catalog strings before Wi‑Fi / large JSON.
   /// legacy: without this, font-list download OOMs on ESP32-C3 (TLS +
   /// ArduinoJson + loaded .cpfont + registry). Marks registry dirty so the

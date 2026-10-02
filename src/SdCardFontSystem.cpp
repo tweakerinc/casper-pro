@@ -155,6 +155,39 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
   }
 }
 
+bool SdCardFontSystem::tryApplyReaderSelection(GfxRenderer& renderer, bool (*reflow)(void*), void* context) {
+  if (!reflow) return false;
+  renderer_ = &renderer;
+  refreshIfDirty();
+  if (SETTINGS.sdFontFamilyName[0] == '\0') {
+    if (!reflow(context)) return false;
+    manager_.unloadAll(renderer);
+    return true;
+  }
+  const auto* family = registry_.findFamily(SETTINGS.sdFontFamilyName);
+  if (!family) return false;
+  if (manager_.currentFamilyName() == family->name) {
+    const uint8_t previousPointSize = manager_.currentPointSize();
+    if (!manager_.selectReaderSize(*family, renderer, fontSizeEnumFromSettings())) return false;
+    if (!reflow(context)) {
+      (void)manager_.selectLoadedPointSize(previousPointSize);
+      return false;
+    }
+    setupUiFallbacks(renderer);
+    return true;
+  }
+  SdCardFontManager previous;
+  manager_.swap(previous);  // previous faces still registered until success
+  if (!manager_.loadFamily(*family, renderer, fontSizeEnumFromSettings()) || !reflow(context)) {
+    manager_.unloadAll(renderer);
+    manager_.swap(previous);
+    return false;
+  }
+  previous.unloadAll(renderer);
+  setupUiFallbacks(renderer);
+  return true;
+}
+
 void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
   const std::string& familyName = manager_.currentFamilyName();
   if (familyName.empty()) return;  // no SD family loaded — nothing to fall back to

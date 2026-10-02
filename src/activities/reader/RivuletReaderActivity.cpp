@@ -156,6 +156,10 @@ bool RivuletReaderActivity::saveProgress() const {
 }
 
 void RivuletReaderActivity::persistProgressForSleep() {
+  if (appearanceOpen_) {
+    appearanceDesired_ = BookAppearanceState::capture();
+    if (appearanceDesired_ != appearanceOriginal_) (void)SETTINGS.saveToFile();
+  }
   // Called while still foreground — before SleepActivity tears us down. Guarantees
   // progress.bin hits SD even if onExit is skipped or fails mid-teardown.
   if (!epub_ || !ready_) return;
@@ -2560,6 +2564,8 @@ void RivuletReaderActivity::onEnter() {
 }
 
 void RivuletReaderActivity::onExit() {
+  if (appearanceOpen_ && BookAppearanceState::capture() != appearanceOriginal_) (void)SETTINGS.saveToFile();
+  appearanceOpen_ = false;
   // leaveReaderToHome already flushed under status chrome so PopToHome does
   // not stall on SD with the book page frozen and no feedback.
   if (!leaveExitFlushed_) {
@@ -2578,12 +2584,14 @@ void RivuletReaderActivity::onExit() {
 }
 
 bool RivuletReaderActivity::handleHomeGesture() {
+  if (appearanceOpen_) { (void)closeBookAppearance(); return true; }
   // Capacitive Home while reading: same leave path as Back (progress + optional KO).
   leaveReaderToHome();
   return true;
 }
 
 bool RivuletReaderActivity::handleMenuGesture() {
+  if (appearanceOpen_) { (void)closeBookAppearance(); return true; }
   openReaderMenu();
   return true;
 }
@@ -2662,7 +2670,8 @@ void RivuletReaderActivity::openReaderMenu() {
         }
 
         // Fonts / Reader UI need contiguous heap — release now, restore on child return.
-        if (action == static_cast<int>(MA::MANAGE_FONTS) || action == static_cast<int>(MA::MANAGE_READER_UI)) {
+        if ((action == static_cast<int>(MA::MANAGE_FONTS) && !mappedInput.hasTouch()) ||
+            action == static_cast<int>(MA::MANAGE_READER_UI)) {
           releaseHeavyForUi();
           onReaderMenuAction(action);
           return;
@@ -2735,6 +2744,7 @@ void RivuletReaderActivity::onReaderMenuAction(const int action) {
                              });
       return;
     case MA::MANAGE_FONTS:
+      if (mappedInput.hasTouch() && handleBookAppearanceGesture()) return;
       // Chapter released while fonts UI runs; restore to held page (reflow via load).
       startActivityForResult(
           std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
@@ -3478,6 +3488,7 @@ bool RivuletReaderActivity::trySideLongPressShortcut() {
 }
 
 void RivuletReaderActivity::loop() {
+  if (appearanceOpen_) { loopBookAppearance(); return; }
   if (error_) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
         mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -3996,7 +4007,7 @@ void RivuletReaderActivity::render(RenderLock&& lock) {
   // a preferFast/defer skip, because those no longer decline AA.
   const bool aaCatchUp = forceAaThisRender_;
   forceAaThisRender_ = false;
-  const bool aaThisFrame = aaWanted && heapOkForAa && !forceScrub;
+  const bool aaThisFrame = aaWanted && heapOkForAa && !forceScrub && !appearanceOpen_;
   const char aaWhy = !aaWanted      ? 'o'   // off in settings (or dark mode)
                      : forceScrub   ? 's'   // long-press / interval scrub owns this frame
                      : !heapOkForAa ? 'h'   // storeBwBuffer would not fit
@@ -4014,6 +4025,8 @@ void RivuletReaderActivity::render(RenderLock&& lock) {
       static_cast<long>(millis() - bookmarkToastUntilMs_) < 0) {
     GUI.drawPopup(renderer, bookmarkToastMsg_, BaseTheme::kPopupCenterY, /*refresh=*/false);
   }
+
+  if (appearanceOpen_) paintBookAppearance();
 
   const uint32_t tRefresh = millis();
   // The BW page is already painted into the framebuffer above. AA puts it on

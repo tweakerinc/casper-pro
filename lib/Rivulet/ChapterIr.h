@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <string>
-#include <vector>
+#include "CheckedVector.h"
 
 #include "IrFormat.h"
 
@@ -75,9 +75,9 @@ class ChapterIr {
   void setCurrentMarginsEmQ4(int8_t top, int8_t bottom);
   void markDropCapOnCurrent();
 
-  [[nodiscard]] const std::vector<Block>& blocks() const { return blocks_; }
-  [[nodiscard]] std::vector<Block>& blocksMutable() { return blocks_; }
-  [[nodiscard]] const std::vector<Run>& runs() const { return runs_; }
+  [[nodiscard]] const CheckedVector<Block>& blocks() const { return blocks_; }
+  [[nodiscard]] CheckedVector<Block>& blocksMutable() { return blocks_; }
+  [[nodiscard]] const CheckedVector<Run>& runs() const { return runs_; }
   [[nodiscard]] const char* textData() const { return textData_ ? textData_ : ""; }
   [[nodiscard]] size_t textSize() const { return textLen_; }
   // Compatibility for call sites that used textBlob().size().
@@ -109,8 +109,8 @@ class ChapterIr {
 
   bool openBlock_ = false;
   bool failed_ = false;
-  std::vector<Block> blocks_;
-  std::vector<Run> runs_;
+  CheckedVector<Block> blocks_;
+  CheckedVector<Run> runs_;
   char* textData_ = nullptr;
   size_t textLen_ = 0;
   size_t textCap_ = 0;

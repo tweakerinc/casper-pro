@@ -101,12 +101,18 @@ void ActivityManager::renderTaskLoop() {
 }
 
 void ActivityManager::loop() {
-  if (currentActivity) {
+  // Returning from input dispatch must not skip pending transitions or the
+  // deferred render notification below (Home/swipes previously did exactly that).
+  const auto dispatchInput = [this]() {
+  if (currentActivity && pendingAction == PendingAction::None) {
     // Capacitive Home pad: hierarchical Back, then Home.
     // Stack: [Home, Reader, Clip] + current Def → pop Def; next pop Clip; …
     // When current is the reader with only Home under it, one pop resumes Home.
     // Never skip intermediate screens (clipping tool used to jump straight home).
     if (gpio.wasHomeKeyTapped()) {
+      const auto cancelled = leftBrightnessGesture_.cancel();
+      if (cancelled.save) SETTINGS.saveToFile();
+      mappedInput.suppressTouchContact();
       if (currentActivity->isHomeActivity()) {
         return;
       }
@@ -123,10 +129,29 @@ void ActivityManager::loop() {
       return;
     }
 
+#if FREEINK_CAP_FRONTLIGHT
+    // A held left-edge contact owns its movement/release before edge swipes.
+    // Do NOT suppress the live contact: HAL also hides held coordinates when
+    // suppressed. Suppress only when finishing/cancelling the gesture.
+    int tx = 0, ty = 0, hx = 0, hy = 0;
+    const bool longPress = mappedInput.wasTouchLongPress(tx, ty);
+    const bool held = mappedInput.isScreenTouchHeld(hx, hy);
+    const bool enabled = frontlight().present() && currentActivity->name != "FrontlightQuick" &&
+                         !currentActivity->capturesGlobalTouch();
+    const auto brightness = leftBrightnessGesture_.update(enabled, renderer.getScreenWidth(),
+        renderer.getScreenHeight(), longPress, tx, held, hy, SETTINGS.frontlightBrightness);
+    if (brightness.changed) setFrontlightBrightnessPercent(brightness.level, /*mirrorToActivePreset=*/true);
+    if (brightness.save) SETTINGS.saveToFile();
+    if (brightness.consumed) {
+      if (!leftBrightnessGesture_.active()) mappedInput.suppressTouchContact();
+      return;
+    }
+#endif
+
     // Configurable edge gestures (Settings → Controls → Gestures).
     // Always run on touch boards — not gated on frontlight (TL menu used to miss
     // when only FRONTLIGHT block ran and handleMenuGesture returned false on Home).
-    if (gpio.hasTouch() && currentActivity->name != "FrontlightQuick" &&
+    if (gpio.hasTouch() && !currentActivity->capturesGlobalTouch() && currentActivity->name != "FrontlightQuick" &&
         currentActivity->name != "GestureSettings") {
       auto runGesture = [this](const uint8_t action) -> bool {
         using A = CasperSettings::GESTURE_ACTION;
@@ -192,6 +217,11 @@ void ActivityManager::loop() {
         }
       };
 
+      if ((mappedInput.wasBottomLeftUpGesture() || mappedInput.wasBottomRightUpGesture()) &&
+          currentActivity->handleBookAppearanceGesture()) {
+        mappedInput.suppressTouchContact();
+        return;
+      }
       if (mappedInput.wasTopLeftMenuGesture() && runGesture(SETTINGS.gestureTopLeftDown)) return;
       if (mappedInput.wasTopRightLightGesture() && runGesture(SETTINGS.gestureTopRightDown)) return;
       // Bottom swipe-up must not eject the reader (Library/Recents/Home). Users
@@ -217,69 +247,18 @@ void ActivityManager::loop() {
       if (mappedInput.wasTopRightToLeftGesture() && runGesture(SETTINGS.gestureTopRightToLeft)) return;
     }
 
-#if FREEINK_CAP_FRONTLIGHT
 
-    // Left-edge brightness: long-press to arm (level unchanged), then relative drag.
-    // Finger up from arm point → brighter; down → dimmer. No jump to absolute Y.
-    // ~45% of screen height of drag covers full 0–100% so any start point can
-    // still reach the ends. Brightness only (never color temperature).
-    if (frontlight().present() && currentActivity->name != "FrontlightQuick") {
-      static bool leftBriActive = false;
-      static bool leftBriDragging = false;
-      static int leftBriAnchorY = 0;
-      static int leftBriAnchor = 40;
-      static int leftBriLastApplied = -1;
-      int tx = 0, ty = 0;
-      const int pageW = renderer.getScreenWidth();
-      const int pageH = renderer.getScreenHeight();
-      const int edgeW = std::max(24, pageW / 8);
-      constexpr int kDragSlopPx = 12;
-
-      if (!leftBriActive) {
-        if (mappedInput.wasTouchLongPress(tx, ty) && tx < edgeW) {
-          leftBriActive = true;
-          leftBriDragging = false;
-          leftBriAnchor = static_cast<int>(SETTINGS.frontlightBrightness);
-          leftBriLastApplied = leftBriAnchor;
-          int hx = tx, hy = ty;
-          if (mappedInput.isScreenTouchHeld(hx, hy)) {
-            leftBriAnchorY = hy;
-          } else {
-            leftBriAnchorY = ty;
-          }
-          return;
-        }
-      } else if (mappedInput.isScreenTouchHeld(tx, ty)) {
-        if (!leftBriDragging && std::abs(ty - leftBriAnchorY) < kDragSlopPx) {
-          return;  // armed — hold level until intentional drag
-        }
-        leftBriDragging = true;
-        // Relative to arm: dy in pixels → percent. fullRangePx ≈ half-screen for
-        // smooth control while still reaching 0 and 100 from mid-screen.
-        // Same 0–100 scale + apply path as the top light sheet (+/− is 1%).
-        const int fullRangePx = std::max(80, (pageH * 45) / 100);
-        const int deltaPct = (leftBriAnchorY - ty) * 100 / fullRangePx;
-        const int v = std::clamp(leftBriAnchor + deltaPct, 0, 100);
-        // Only re-PWM when the integer % changes (cuts LED jitter).
-        if (v != leftBriLastApplied) {
-          leftBriLastApplied = v;
-          setFrontlightBrightnessPercent(v, /*mirrorToActivePreset=*/true);
-        }
-        return;
-      } else {
-        if (leftBriDragging) {
-          SETTINGS.saveToFile();
-        }
-        leftBriActive = false;
-        leftBriDragging = false;
-        leftBriLastApplied = -1;
-        return;
-      }
-    }
-#endif
 
     // Note: do not hold a lock here, the loop() method must be responsible for acquire one if needed
     currentActivity->loop();
+  }
+  };
+  dispatchInput();
+
+  if (pendingAction != PendingAction::None) {
+    const auto cancelled = leftBrightnessGesture_.cancel();
+    if (cancelled.save) SETTINGS.saveToFile();
+    mappedInput.suppressTouchContact();
   }
 
   while (pendingAction != PendingAction::None) {

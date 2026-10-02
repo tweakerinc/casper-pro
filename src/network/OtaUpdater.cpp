@@ -13,6 +13,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback, void*) {
 #include <strings.h>
 
 #include <cstring>
+#include <climits>
 
 #include "FirmwareFlasher.h"
 #include "HttpDownloader.h"
@@ -72,7 +73,9 @@ ParsedVersion parseVersion(const char* version) {
 
     int value = 0;
     while (isDigit(*p)) {
-      value = value * 10 + (*p - '0');
+      const int digit = *p - '0';
+      if (value > (INT_MAX - digit) / 10) return parsed;
+      value = value * 10 + digit;
       ++p;
     }
     parsed.segments[segmentIndex] = value;
@@ -146,7 +149,11 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   processedSize = 0;
   totalSize = 0;
 
+#if FREEINK_DEVICE_X4PRO
+  ReleaseJsonParser releaseParser(ReleaseJsonParser::FirmwareTarget::X4Pro);
+#else
   ReleaseJsonParser releaseParser;
+#endif
 
   // Stream GitHub release JSON via HttpDownloader (wolfSSL when enabled). Do NOT
   // use a separate esp_http_client + mbedTLS session here: a dual TLS stack

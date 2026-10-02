@@ -14,38 +14,13 @@
 #include "fontIds.h"
 
 namespace readerkey {
-namespace {
-
-// SD-card fonts have no Rivulet v1 ladder, so fall back to the builtin ladder
-// closest to the chosen size. Builtin ladder is 10/12/14/16 only; 8 maps to 10
-// and 18 maps to 16.
-int32_t builtinLadderFontId() {
-  const bool literata = SETTINGS.fontFamily == CasperSettings::LITERATA;
-  switch (SETTINGS.fontSize) {
-    case CasperSettings::SIZE_8:
-    case CasperSettings::SIZE_10:
-      return literata ? LITERATA_10_FONT_ID : SOURCESERIF4_10_FONT_ID;
-    case CasperSettings::SIZE_14:
-      return literata ? LITERATA_14_FONT_ID : SOURCESERIF4_14_FONT_ID;
-    case CasperSettings::SIZE_16:
-    case CasperSettings::SIZE_18:
-      return literata ? LITERATA_16_FONT_ID : SOURCESERIF4_16_FONT_ID;
-    case CasperSettings::SIZE_12:
-    default:
-      return literata ? LITERATA_12_FONT_ID : SOURCESERIF4_12_FONT_ID;
-  }
-}
-
-}  // namespace
-
 Layout compute(const GfxRenderer& renderer) {
   Layout out;
   rivulet::RenderKey& key = out.key;
 
   key.fontId = SETTINGS.getReaderFontId();
-  if (renderer.isSdCardFont(key.fontId)) {
-    key.fontId = builtinLadderFontId();
-  }
+  // Keep the selected SD face. PageLayouter resolves the shared multi-size
+  // ladder so measurement and paint use this same family, not a hidden builtin.
 
   // Match EpubReader computeReaderViewportLayout: top chrome air + bottom reserve
   // for status bar AND dictionary/clip front-button hint strip so last lines

@@ -138,12 +138,16 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
   uint16_t imageChip;
   std::memcpy(&imageChip, header + 12, sizeof(imageChip));
   const uint16_t deviceChip = runningPartitionChipId();
-  if (deviceChip != 0xFFFF && imageChip != deviceChip) {
+  if (deviceChip == 0xFFFF || imageChip != deviceChip) {
     LOG_ERR("FLASH", "validate: wrong chip: image=0x%04X device=0x%04X", imageChip, deviceChip);
     file.close();
     return Result::BAD_CHIP;
   }
   const uint8_t segCount = header[1];
+  if (segCount == 0 || segCount > 16 || header[23] > 1) {
+    file.close();
+    return Result::BAD_SEGMENTS;
+  }
   const bool hashAppended = header[23] != 0;
 
   auto buf = std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[CHUNK]);
@@ -161,7 +165,7 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
   size_t pos = HEADER_SIZE;
 
   for (uint8_t i = 0; i < segCount; i++) {
-    if (pos + SEG_HEADER_SIZE > fileSize) {
+    if (pos > fileSize || SEG_HEADER_SIZE > fileSize - pos) {
       LOG_ERR("FLASH", "validate: seg %u header overruns EOF at %u", i, static_cast<unsigned>(pos));
       mbedtls_sha256_free(&shaCtx);
       file.close();
@@ -178,7 +182,7 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
 
     uint32_t dataLen;
     std::memcpy(&dataLen, segHdr + 4, sizeof(dataLen));
-    if (pos + dataLen > fileSize) {
+    if (pos > fileSize || dataLen > fileSize - pos) {
       LOG_ERR("FLASH", "validate: seg %u data overruns EOF (%u + %u > %u)", i, static_cast<unsigned>(pos),
               static_cast<unsigned>(dataLen), static_cast<unsigned>(fileSize));
       mbedtls_sha256_free(&shaCtx);

@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
+#include <array>
+#include <algorithm>
+#include <utility>
 
 class GfxRenderer;
 class SdCardFont;
@@ -46,6 +48,15 @@ class SdCardFontManager {
   bool fillRelativeLadder(int baseFontId, const SdCardFontFamilyInfo& family, GfxRenderer& renderer,
                           int outFontIdByStep[5]);
 
+  // Reuse/load a size without unloading the old face; used by live appearance.
+  bool selectReaderSize(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t fontSizeEnum);
+  bool selectLoadedPointSize(uint8_t pointSize);
+  void swap(SdCardFontManager& other) noexcept {
+    loaded_.swap(other.loaded_);
+    loadedFamilyName_.swap(other.loadedFamilyName_);
+    std::swap(loadedPointSize_, other.loadedPointSize_);
+  }
+
   // Get name of currently loaded family (empty if none).
   const std::string& currentFamilyName() const { return loadedFamilyName_; };
 
@@ -67,5 +78,20 @@ class SdCardFontManager {
 
   std::string loadedFamilyName_;
   uint8_t loadedPointSize_ = 0;
-  std::vector<LoadedFont> loaded_;
+  struct FontSlots {
+    static constexpr size_t capacity = 12;  // six reader rungs + UI/CJK fallback sizes
+    std::array<LoadedFont, capacity> slots{};
+    size_t count = 0;
+    LoadedFont* begin() { return slots.data(); }
+    const LoadedFont* begin() const { return slots.data(); }
+    LoadedFont* end() { return slots.data() + count; }
+    const LoadedFont* end() const { return slots.data() + count; }
+    bool empty() const { return count == 0; }
+    size_t size() const { return count; }
+    LoadedFont& front() { return slots[0]; }
+    const LoadedFont& front() const { return slots[0]; }
+    bool push_back(LoadedFont f) { if (count == capacity) return false; slots[count++] = f; return true; }
+    void clear() { count = 0; }
+    void swap(FontSlots& other) noexcept { slots.swap(other.slots); std::swap(count, other.count); }
+  } loaded_;
 };
