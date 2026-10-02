@@ -27,9 +27,9 @@ constexpr int kSourceSerif[6] = {
 };
 
 int familyIndex(const int* ladder, const int fontId) {
-  for (int i = 0; i < 6; ++i) {
-    if (ladder[i] == fontId) return i;
-  }
+  // Prefer the real 10/12/14/16 entry over the clamped 8/18 alias.
+  for (int i = 1; i < 5; ++i) if (ladder[i] == fontId) return i;
+  for (int i : {0, 5}) if (ladder[i] == fontId) return i;
   return -1;
 }
 

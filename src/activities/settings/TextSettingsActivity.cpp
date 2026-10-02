@@ -83,8 +83,7 @@ TextSettingsActivity::TextSettingsActivity(GfxRenderer& renderer, MappedInputMan
 void TextSettingsActivity::onEnter() {
   Activity::onEnter();
 
-  // Keep Embedded Style locked to Alignment (Book's Style ⇔ CSS on).
-  applyAlignmentAndEmbedded(SETTINGS.paragraphAlignment);
+  appearanceOnEnter_ = BookAppearanceState::capture();
 
   metrics_ = UITheme::getInstance().getMetrics();
   // Match Settings: tab bar sits directly under the header so the shared
@@ -123,7 +122,7 @@ void TextSettingsActivity::armAwaitOpenButtonRelease(const bool force) {
 void TextSettingsActivity::onExit() {
   // Persist font/layout/style toggles. Without this, Extra Paragraph Spacing (and
   // other Text Settings) only lived in RAM and reset to factory defaults on reboot.
-  (void)SETTINGS.saveToFile();
+  if (BookAppearanceState::capture() != appearanceOnEnter_) (void)SETTINGS.saveToFile();
   Activity::onExit();
 }
 

@@ -63,6 +63,13 @@ class RivuletEngine {
   // Ensure map has starts through currentPage + aheadPages (or complete).
   bool ensureMapAhead(const GfxRenderer& renderer, int aheadPages = kMapAheadPages);
 
+  // Reflow the resident IR around a content cursor. The old page/map remain
+  // owned until the new layout succeeds, and are restored on failure. No IR
+  // extraction or disk cache writes. Caller keeps old fonts alive and holds
+  // the render lock. Work is bounded to avoid hanging on pathological chapters.
+  bool reflowToCursor(const GfxRenderer& renderer, const RenderKey& key, float lc,
+                      const IrCursor& anchor, int maxPages = 1024, uint32_t maxMillis = 2500);
+
   // Navigation
   // maxWalkPages caps progressive map fill so interactive calls cannot freeze.
   // Resume may pass a larger budget (with yield inside).
@@ -181,7 +188,7 @@ class RivuletEngine {
   // resulting end cursor and discard the spans. See LayoutParams::measureOnly.
   LayoutParams makeMeasureParams(const GfxRenderer& renderer) const;
   bool layoutAtCursor(const GfxRenderer& renderer, const IrCursor& c);
-  void seedMapIfEmpty();
+  bool seedMapIfEmpty();
   // markComplete only if known page count is plausible vs IR estimate.
   void markMapCompleteIfPlausible(const GfxRenderer& renderer);
   bool tryLoadPageCache(int pageIndex);

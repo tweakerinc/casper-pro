@@ -19,6 +19,8 @@
 #include "activities/reader/ReaderUtils.h"
 
 #if !FREEINK_CAP_FRONTLIGHT
+bool FrontlightQuickActivity::s_skipParentRepaint = false;
+bool FrontlightQuickActivity::consumeSkipParentRepaint() { return false; }
 void FrontlightQuickActivity::onEnter() { finish(); }
 void FrontlightQuickActivity::onExit() { Activity::onExit(); }
 void FrontlightQuickActivity::loop() {}

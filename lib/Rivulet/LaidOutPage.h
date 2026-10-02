@@ -46,6 +46,7 @@ struct LaidOutPage {
   IrCursor end{};     // exclusive end cursor (start of next page)
   int16_t contentH = 0;
   bool atChapterEnd = false;
+  bool storageFailed = false;  // transient OOM, never a skippable block/cache record
 
   // Drop-cap exclusion for wrap (page-local).
   int16_t dropZoneW = 0;
@@ -60,9 +61,17 @@ struct LaidOutPage {
     end = {};
     contentH = 0;
     atChapterEnd = false;
+    storageFailed = false;
     dropZoneW = 0;
     dropZoneH = 0;
     hasDropZone = false;
+  }
+
+  void release() {
+    clear();
+    std::vector<GlyphSpan>().swap(spans);
+    std::vector<ImagePlate>().swap(images);
+    std::vector<RulePlate>().swap(rules);
   }
 
   // Classic section.bin idea, Rivulet data: persist a fully laid-out page so

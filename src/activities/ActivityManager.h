@@ -12,6 +12,7 @@
 
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
+#include "util/LeftBrightnessGesture.h"
 #include "util/ScreenshotInfo.h"
 
 class Activity;    // forward declaration
@@ -41,6 +42,7 @@ class ActivityManager {
   MappedInputManager& mappedInput;
   std::vector<std::unique_ptr<Activity>> stackActivities;
   std::unique_ptr<Activity> currentActivity;
+  LeftBrightnessGesture leftBrightnessGesture_;
 
   void exitActivity(const RenderLock& lock);
 

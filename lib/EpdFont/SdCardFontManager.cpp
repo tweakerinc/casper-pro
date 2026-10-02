@@ -2,6 +2,7 @@
 
 #include <EpdFontFamily.h>
 #include <GfxRenderer.h>
+#include <FontCacheManager.h>
 #include <Logging.h>
 #include <SdCardFont.h>
 #include <SdCardFontRegistry.h>
@@ -32,6 +33,7 @@ int SdCardFontManager::computeFontId(uint32_t contentHash, const char* familyNam
 }
 
 int SdCardFontManager::loadFile(const SdCardFontFileInfo& file, const char* familyName, GfxRenderer& renderer) {
+  if (loaded_.size() >= FontSlots::capacity) return 0;
   auto* font = new (std::nothrow) SdCardFont();
   if (!font) {
     LOG_ERR("SDMGR", "Failed to allocate SdCardFont for %s", file.path.c_str());
@@ -53,7 +55,11 @@ int SdCardFontManager::loadFile(const SdCardFontFileInfo& file, const char* fami
     return 0;
   }
   renderer.registerSdCardFont(fontId, font);
-  loaded_.push_back({font, fontId, file.pointSize});
+  if (!loaded_.push_back({font, fontId, file.pointSize})) {
+    renderer.unregisterSdCardFont(fontId);
+    delete font;
+    return 0;
+  }
 
   LOG_DBG("SDMGR", "Loaded %s size=%u id=%d styles=%u", file.path.c_str(), file.pointSize, fontId, font->styleCount());
 
@@ -88,6 +94,7 @@ bool SdCardFontManager::loadFamily(const SdCardFontFamilyInfo& family, GfxRender
 
 int SdCardFontManager::loadFamilyExtraSize(const SdCardFontFamilyInfo& family, GfxRenderer& renderer,
                                            uint8_t pointSize) {
+  if (family.name != loadedFamilyName_) return 0;
   const SdCardFontFileInfo* file = family.findFile(pointSize);
   if (!file) return 0;  // family has no .cpfont at this exact size
 
@@ -100,10 +107,34 @@ int SdCardFontManager::loadFamilyExtraSize(const SdCardFontFamilyInfo& family, G
   return loadFile(*file, family.name.c_str(), renderer);
 }
 
+bool SdCardFontManager::selectLoadedPointSize(uint8_t pointSize) {
+  for (auto& font : loaded_) {
+    if (font.size == pointSize) {
+      std::swap(loaded_.front(), font);
+      loadedPointSize_ = pointSize;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SdCardFontManager::selectReaderSize(const SdCardFontFamilyInfo& family, GfxRenderer& renderer,
+                                        uint8_t fontSizeEnum) {
+  if (family.name != loadedFamilyName_) return false;
+  const auto* selected = family.findClosestReaderSize(fontSizeEnum);
+  if (!selected) return false;
+  if (!selectLoadedPointSize(selected->pointSize)) {
+    if (loadFamilyExtraSize(family, renderer, selected->pointSize) == 0) return false;
+    return selectLoadedPointSize(selected->pointSize);
+  }
+  return true;
+}
+
 void SdCardFontManager::unloadAll(GfxRenderer& renderer) {
   // Drop UI CJK fallbacks before the SD fonts they point at are freed.
-  renderer.clearFallbackFonts();
-  renderer.clearSdCardFonts();
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearCache();
+  // Only unregister faces owned here. A font-selection transaction may have a
+  // second manager alive until layout succeeds; global clearing breaks its IDs.
   for (auto& lf : loaded_) {
     renderer.removeFont(lf.fontId);
     delete lf.font;
@@ -177,7 +208,7 @@ bool SdCardFontManager::fillRelativeLadder(const int baseFontId, const SdCardFon
     }
     // Fallback: closest loaded size if this pt is missing on disk.
     if (id == 0) {
-      int best = -1;
+      int best = 0;
       int bestD = 255;
       for (const auto& lf : loaded_) {
         const int d = std::abs(static_cast<int>(lf.size) - static_cast<int>(wantPt));
@@ -186,7 +217,7 @@ bool SdCardFontManager::fillRelativeLadder(const int baseFontId, const SdCardFon
           best = lf.fontId;
         }
       }
-      id = best > 0 ? best : baseFontId;
+      id = best != 0 ? best : baseFontId;  // font hashes are signed; negative IDs are valid
     }
     outFontIdByStep[step] = id;
     if (id != 0 && id != lastId) {

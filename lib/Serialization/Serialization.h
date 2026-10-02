@@ -79,7 +79,8 @@ inline void readString(HalFile& file, std::string& s) {
 // stored here cannot be longer than what follows its own length prefix. That
 // caps the allocation at the file size and turns every malformed record into a
 // clean `false` for the caller to handle.
-inline bool tryReadString(HalFile& file, std::string& s) {
+inline bool tryReadString(HalFile& file, std::string& s,
+                          size_t maxBytes = std::numeric_limits<size_t>::max()) {
   uint32_t len = 0;
   if (!tryReadPod(file, len)) {
     return false;
@@ -87,7 +88,7 @@ inline bool tryReadString(HalFile& file, std::string& s) {
   const size_t pos = file.position();
   const size_t total = file.size();
   const size_t remaining = (total > pos) ? (total - pos) : 0;
-  if (static_cast<size_t>(len) > remaining) {
+  if (static_cast<size_t>(len) > maxBytes || static_cast<size_t>(len) > remaining) {
     return false;
   }
   if (static_cast<size_t>(len) > s.max_size() || len > static_cast<uint32_t>(std::numeric_limits<int>::max())) {

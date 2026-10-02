@@ -3,6 +3,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Serialization.h>
+#include <Esp.h>
 
 #include <cstdio>
 #include <cstring>
@@ -12,12 +13,21 @@ namespace {
 
 constexpr char kPageMagic[4] = {'R', 'V', 'P', 'G'};
 // v2: page carries drawn thematic-break rules (RulePlate) as well as spans/images.
-constexpr uint16_t kPageFormatVersion = 3;  // v3: no leading-space indent / last-line justify
+constexpr uint16_t kPageFormatVersion = 4;  // v3: no leading-space indent / last-line justify
 // Soft caps — a pathological page should not allocate unbounded on load.
 constexpr uint32_t kMaxSpans = 2000;
 constexpr uint32_t kMaxImages = 64;
 constexpr uint32_t kMaxRules = 64;
 constexpr uint32_t kMaxTextBytes = 4096;
+constexpr uint32_t kMaxHrefBytes = 1024;
+constexpr uint32_t kMaxPageFileBytes = 64 * 1024;
+constexpr size_t kReadHeadroom = 12 * 1024;
+
+bool canReservePageRecords(size_t count, size_t elementSize, HalFile& file, size_t diskBytes) {
+  if (file.position() > file.size() || count > (file.size() - file.position()) / diskBytes) return false;
+  const size_t bytes = count * elementSize;
+  return bytes <= ESP.getMaxAllocHeap() && bytes + kReadHeadroom <= ESP.getFreeHeap();
+}
 
 bool writeCursor(HalFile& f, const IrCursor& c) {
   return serialization::tryWritePod(f, c.blockIndex) && serialization::tryWritePod(f, c.runIndex) &&
@@ -32,13 +42,15 @@ bool readCursor(HalFile& f, IrCursor& c) {
 }  // namespace
 
 bool LaidOutPage::saveToFile(const char* path, const RenderKey& key, const int pageIndex) const {
+  if (storageFailed) return false;
   if (!path || !*path || pageIndex < 0) return false;
   // Atomic: .tmp + rename so a power loss cannot leave a half-written page that
   // later deserializes into a partly-blank page.
   char tmpPath[240];
   const int wrote = std::snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", path);
   const bool useTmp = wrote > 0 && static_cast<size_t>(wrote) < sizeof(tmpPath);
-  const char* writePath = useTmp ? tmpPath : path;
+  if (!useTmp) return false;  // Never fall back to overwriting the live cache.
+  const char* writePath = tmpPath;
   if (useTmp && Storage.exists(tmpPath)) Storage.remove(tmpPath);
   HalFile f;
   if (!Storage.openFileForWrite("RVPG", writePath, f)) return false;
@@ -106,6 +118,7 @@ bool LaidOutPage::loadFromFile(const char* path, const RenderKey& expectedKey, c
   if (!path || !*path || expectedPage < 0) return false;
   HalFile f;
   if (!Storage.openFileForRead("RVPG", path, f)) return false;
+  if (f.size() > kMaxPageFileBytes || ESP.getFreeHeap() < 2 * kReadHeadroom) { f.close(); return false; }
 
   char magic[4] = {};
   if (!serialization::tryReadPod(f, magic) || std::memcmp(magic, kPageMagic, 4) != 0) {
@@ -140,11 +153,13 @@ bool LaidOutPage::loadFromFile(const char* path, const RenderKey& expectedKey, c
     clear();
     return false;
   }
+  if (endU8 > 1 || dropU8 > 1) { f.close(); clear(); return false; }
   atChapterEnd = endU8 != 0;
   hasDropZone = dropU8 != 0;
 
   uint32_t nSpans = 0;
-  if (!serialization::tryReadPod(f, nSpans) || nSpans > kMaxSpans) {
+  if (!serialization::tryReadPod(f, nSpans) || nSpans > kMaxSpans ||
+      !canReservePageRecords(nSpans, sizeof(GlyphSpan), f, 14)) {
     f.close();
     clear();
     return false;
@@ -155,7 +170,7 @@ bool LaidOutPage::loadFromFile(const char* path, const RenderKey& expectedKey, c
     int32_t fontId = 0;
     if (!serialization::tryReadPod(f, sp.x) || !serialization::tryReadPod(f, sp.y) ||
         !serialization::tryReadPod(f, fontId) || !serialization::tryReadPod(f, sp.epdStyle) ||
-        !serialization::tryReadPod(f, sp.dropScale) || !serialization::tryReadString(f, sp.text)) {
+        !serialization::tryReadPod(f, sp.dropScale) || !serialization::tryReadString(f, sp.text, kMaxTextBytes)) {
       f.close();
       clear();
       return false;
@@ -170,7 +185,8 @@ bool LaidOutPage::loadFromFile(const char* path, const RenderKey& expectedKey, c
   }
 
   uint32_t nImgs = 0;
-  if (!serialization::tryReadPod(f, nImgs) || nImgs > kMaxImages) {
+  if (!serialization::tryReadPod(f, nImgs) || nImgs > kMaxImages ||
+      !canReservePageRecords(nImgs, sizeof(ImagePlate), f, 12)) {
     f.close();
     clear();
     return false;
@@ -180,7 +196,7 @@ bool LaidOutPage::loadFromFile(const char* path, const RenderKey& expectedKey, c
     ImagePlate im;
     if (!serialization::tryReadPod(f, im.x) || !serialization::tryReadPod(f, im.y) ||
         !serialization::tryReadPod(f, im.w) || !serialization::tryReadPod(f, im.h) ||
-        !serialization::tryReadString(f, im.href)) {
+        !serialization::tryReadString(f, im.href, kMaxHrefBytes)) {
       f.close();
       clear();
       return false;
@@ -189,7 +205,8 @@ bool LaidOutPage::loadFromFile(const char* path, const RenderKey& expectedKey, c
   }
 
   uint32_t nRules = 0;
-  if (!serialization::tryReadPod(f, nRules) || nRules > kMaxRules) {
+  if (!serialization::tryReadPod(f, nRules) || nRules > kMaxRules ||
+      !canReservePageRecords(nRules, sizeof(RulePlate), f, 8)) {
     f.close();
     clear();
     return false;
@@ -206,8 +223,10 @@ bool LaidOutPage::loadFromFile(const char* path, const RenderKey& expectedKey, c
     rules.push_back(r);
   }
 
+  const bool complete = f.position() == f.size();
   f.close();
-  return true;
+  if (!complete) clear();
+  return complete;
 }
 
 }  // namespace rivulet

@@ -17,10 +17,11 @@ inline constexpr char kIrMagic[4] = {'R', 'V', 'I', 'R'};
 // v23: real typography preserved. v22 and earlier flattened curly quotes to ' ",
 // en/em dashes to -, and the ellipsis to "..." while building the IR, so cached
 // chapters hold the flattened text and must be reconverted to get it back.
-inline constexpr uint16_t kIrFormatVersion = 23;
+// v24: lossless splitting of 16-bit runs; reject stale caches with truncated text.
+inline constexpr uint16_t kIrFormatVersion = 24;
 // Accept this version on load (inclusive range).
-inline constexpr uint16_t kIrFormatVersionMin = 23;
-inline constexpr uint16_t kIrFormatVersionMax = 23;
+inline constexpr uint16_t kIrFormatVersionMin = 24;
+inline constexpr uint16_t kIrFormatVersionMax = 24;
 
 // Render-spec fingerprint: layout maps invalid when this changes.
 struct RenderKey {
@@ -45,7 +46,7 @@ struct RenderKey {
   bool operator==(const RenderKey& o) const {
     return fontId == o.fontId && viewportW == o.viewportW && viewportH == o.viewportH && marginL == o.marginL &&
            marginR == o.marginR && marginT == o.marginT && marginB == o.marginB &&
-           lineCompressionQ8 == o.lineCompressionQ8 && flags == o.flags;
+           lineCompressionQ8 == o.lineCompressionQ8 && flags == o.flags && pad == o.pad;
   }
   bool operator!=(const RenderKey& o) const { return !(*this == o); }
 };
@@ -126,6 +127,6 @@ inline constexpr uint16_t kBlockOrnament = 1u << 5;      // small chapter orname
 
 // Page map magic
 inline constexpr char kMapMagic[4] = {'R', 'V', 'P', 'M'};
-inline constexpr uint16_t kMapFormatVersion = 1;
+inline constexpr uint16_t kMapFormatVersion = 2;
 
 }  // namespace rivulet

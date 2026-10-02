@@ -1,4 +1,5 @@
 #pragma once
+#include "BookAppearanceState.h"
 
 #include <SdCardFontRegistry.h>
 
@@ -100,6 +101,7 @@ class TextSettingsActivity final : public Activity {
     uint8_t settingIndex;  // CasperSettings::FONT_SIZE enum value
   };
 
+  BookAppearanceState appearanceOnEnter_{};
   const SdCardFontRegistry* registry_;
   ButtonNavigator buttonNavigator_;
   OptionPopup optionPopup_;

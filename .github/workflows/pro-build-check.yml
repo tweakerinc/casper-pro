@@ -1,0 +1,64 @@
+name: Pro firmware build check
+on:
+  push:
+    branches: [fix/pro-reader-memory-touch-20261002]
+    paths: ['src/**', 'lib/**', 'freeink-sdk/**', 'scripts/**', 'platformio.ini', 'partitions*.csv']
+  pull_request:
+    branches: [main, cursor/x4pro-sleep-reader-menu-6b98]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pro-build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x4pro, default]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio/libdeps
+          key: pro-pio-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pro-pio-${{ runner.os }}-${{ matrix.target }}-
+      - name: Install build tools
+        run: python -m pip install platformio==6.1.18 pyyaml jinja2
+      - name: Prepare optional local configuration
+        run: touch platformio.local.ini
+      - name: Build exact target
+        shell: bash
+        run: |
+          set -euo pipefail
+          pio run -e '${{ matrix.target }}' 2>&1 | tee build-${{ matrix.target }}.log
+      - name: Record firmware identity
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate
+          cp .pio/build/${{ matrix.target }}/firmware.bin candidate/
+          cp .pio/build/${{ matrix.target }}/firmware.elf candidate/
+          git rev-parse HEAD > candidate/SOURCE_COMMIT.txt
+          printf '%s\n' '${{ matrix.target }}' > candidate/TARGET.txt
+          sha256sum candidate/firmware.bin > candidate/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-${{ matrix.target }}-${{ github.sha }}
+          path: |
+            build-${{ matrix.target }}.log
+            candidate/
+          retention-days: 7
+          if-no-files-found: warn

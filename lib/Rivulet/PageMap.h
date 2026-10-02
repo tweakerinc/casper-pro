@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
+#include "CheckedVector.h"
 
 #include "IrFormat.h"
 
@@ -14,6 +14,11 @@ struct IrCursor {
   uint16_t runIndex = 0;   // absolute run index in chapter
   uint16_t byteInRun = 0;  // UTF-8 byte offset within run
 
+  bool operator<(const IrCursor& o) const {
+    if (blockIndex != o.blockIndex) return blockIndex < o.blockIndex;
+    if (runIndex != o.runIndex) return runIndex < o.runIndex;
+    return byteInRun < o.byteInRun;
+  }
   bool operator==(const IrCursor& o) const {
     return blockIndex == o.blockIndex && runIndex == o.runIndex && byteInRun == o.byteInRun;
   }
@@ -27,15 +32,16 @@ class PageMap {
   void setRenderKey(const RenderKey& k) { key_ = k; }
   [[nodiscard]] const RenderKey& renderKey() const { return key_; }
 
-  void resetWithStart(const IrCursor& firstPageStart);
-  void pushPageStart(const IrCursor& c);
+  [[nodiscard]] bool resetWithStart(const IrCursor& firstPageStart);
+  [[nodiscard]] bool pushPageStart(const IrCursor& c);
   // Overwrite page start (e.g. re-layout produced a different end). Truncates any
   // later entries so they cannot point past a gap/overlap. Marks map incomplete.
-  void setPageStart(int pageIndex, const IrCursor& c);
+  [[nodiscard]] bool setPageStart(int pageIndex, const IrCursor& c);
   // Drop starts from pageIndex onward (keep [0, pageIndex)).
   void truncateFrom(int pageIndex);
   // Chapter fully walked: total must match starts_.size() (page count = starts).
   void markComplete(const int totalPages) {
+    if (starts_.empty() || totalPages != static_cast<int>(starts_.size())) { markIncomplete(); return; }
     complete_ = true;
     // Prefer live start count — never trust a larger/stale total than we have.
     const int n = static_cast<int>(starts_.size());
@@ -71,7 +77,7 @@ class PageMap {
 
  private:
   RenderKey key_{};
-  std::vector<IrCursor> starts_;
+  CheckedVector<IrCursor> starts_;
   bool complete_ = false;
   int knownTotal_ = 0;
 };
